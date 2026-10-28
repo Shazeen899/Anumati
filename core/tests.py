@@ -9,7 +9,9 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import connection, connections, close_old_connections, transaction, DatabaseError
 from django.utils import timezone
 from .models import *
-from .services import command, create_case, DomainError, advance, make_deadline, review_evidence
+from .services import command, create_case, DomainError, advance, make_deadline, review_evidence, security_review_evidence, permitted_audit_events, resolve_exception, migrate_policy, get_obligation_lifecycle
+from .tasks import upload_pending_evidence
+from .aicte_adapter import AICTEAdapter, AICTEIntegrationError
 from .tasks import scan_deadlines, deliver_event, scan_file
 
 class Fixtures:
@@ -278,3 +280,448 @@ class ConcurrencyTests(Fixtures,TransactionTestCase):
         self.assertEqual(results.count(409),99)
         self.assertEqual(Decision.objects.filter(application_id=case_id,kind='executive').count(),1)
         self.assertEqual(AuditEvent.objects.filter(application_id=case_id,action__in=['approve','reject']).count(),1)
+
+
+@override_settings(DEMO_MODE=True,EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',PASSWORD_HASHERS=['django.contrib.auth.hashers.MD5PasswordHasher'])
+class AuditConfidentialityTests(Fixtures, TestCase):
+    def setUp(self):
+        self.build_fixtures()
+        self.general_g = AuditEvent.objects.create(
+            action='website_submitted',
+            scope_type='grievance',
+            institution=self.i1,
+            application=None,
+            actor=self.users['institution'],
+            reason='General grievance submission'
+        )
+        self.linked_g = AuditEvent.objects.create(
+            action='website_submitted',
+            scope_type='grievance',
+            institution=self.i1,
+            application=self.case,
+            actor=self.users['institution'],
+            reason='Linked grievance submission'
+        )
+        self.app_event = AuditEvent.objects.create(
+            action='submit',
+            scope_type='application',
+            institution=self.i1,
+            application=self.case,
+            actor=self.users['institution'],
+            reason='Application submitted'
+        )
+
+    def test_grievance_audit_isolated_from_non_grievance_roles(self):
+        for role in ['policy', 'operator', 'reviewer', 'committee', 'evc']:
+            qs = permitted_audit_events(self.users[role])
+            self.assertFalse(qs.filter(scope_type='grievance').exists(), f"Role {role} should not see grievance audit events")
+
+    def test_cross_institution_isolation(self):
+        other_qs = permitted_audit_events(self.other)
+        self.assertFalse(other_qs.filter(institution=self.i1).exists())
+        self.assertNotIn(self.general_g, other_qs)
+        self.assertNotIn(self.linked_g, other_qs)
+
+    def test_regional_isolation(self):
+        north_qs = permitted_audit_events(self.users['regional'])
+        self.assertIn(self.general_g, north_qs)
+        self.assertIn(self.linked_g, north_qs)
+
+        south_user = User.objects.create_user('south_reg', password='test-password')
+        Profile.objects.create(user=south_user, role='regional', region='South')
+        south_qs = permitted_audit_events(south_user)
+        self.assertNotIn(self.general_g, south_qs)
+        self.assertNotIn(self.linked_g, south_qs)
+
+    def test_bureau_and_auditor_access(self):
+        for role in ['bureau', 'auditor']:
+            qs = permitted_audit_events(self.users[role])
+            self.assertIn(self.general_g, qs)
+            self.assertIn(self.linked_g, qs)
+
+    def test_institution_own_grievance_audit(self):
+        inst_qs = permitted_audit_events(self.users['institution'])
+        self.assertIn(self.general_g, inst_qs)
+        self.assertIn(self.linked_g, inst_qs)
+
+    def test_audit_api_endpoint_scoping(self):
+        self.client.force_login(self.users['reviewer'])
+        res = self.client.get('/api/audit')
+        self.assertEqual(res.status_code, 200)
+        items = res.json()['items']
+        item_ids = [item['id'] for item in items]
+        self.assertNotIn(self.general_g.pk, item_ids)
+        self.assertNotIn(self.linked_g.pk, item_ids)
+
+
+@override_settings(DEMO_MODE=True,EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',PASSWORD_HASHERS=['django.contrib.auth.hashers.MD5PasswordHasher'])
+class DeadlineResponsibilityTests(Fixtures, TestCase):
+    def setUp(self):
+        self.build_fixtures()
+        self.cmd('institution', 'submit')
+
+    def test_deadline_ownership_transfer_on_return_and_resubmit(self):
+        self.case.refresh_from_db()
+        stage_dl = self.case.deadlines.get(kind='stage', active=True)
+        self.assertEqual(stage_dl.owner, self.users['reviewer'])
+
+        outbox_alert = Outbox.objects.create(
+            application=self.case,
+            recipient=self.users['reviewer'],
+            identity=f'reminder-{uuid.uuid4()}',
+            title='Approaching deadline',
+            body='Reviewer deadline alert',
+            deadline=stage_dl,
+            revision=stage_dl.revision,
+            state='pending'
+        )
+
+        self.cmd('reviewer', 'return', requirement='CLAUSE-12A')
+        self.case.refresh_from_db()
+        self.assertEqual(self.case.stage, 'RETURNED')
+        self.assertEqual(self.case.assigned_to, self.users['institution'])
+
+        stage_dl.refresh_from_db()
+        self.assertEqual(stage_dl.owner, self.users['institution'])
+        self.assertEqual(stage_dl.owner, self.users['institution'])
+
+        outbox_alert.refresh_from_db()
+        self.assertEqual(outbox_alert.state, 'superseded')
+        self.assertEqual(deliver_event(str(outbox_alert.pk)), 'superseded')
+
+        inst_alert = Outbox.objects.create(
+            application=self.case,
+            recipient=self.users['institution'],
+            identity=f'reminder-{uuid.uuid4()}',
+            title='Approaching deadline',
+            body='Institution deadline alert',
+            deadline=stage_dl,
+            revision=stage_dl.revision,
+            state='pending'
+        )
+
+        self.cmd('institution', 'resubmit', reason='Clarification and revised documents provided')
+        self.case.refresh_from_db()
+        self.assertEqual(self.case.stage, 'SCRUTINY')
+        self.assertEqual(self.case.assigned_to, self.users['reviewer'])
+
+        stage_dl.refresh_from_db()
+        self.assertEqual(stage_dl.owner, self.users['reviewer'])
+        self.assertEqual(stage_dl.owner, self.users['reviewer'])
+
+        inst_alert.refresh_from_db()
+        self.assertEqual(inst_alert.state, 'superseded')
+        self.assertEqual(deliver_event(str(inst_alert.pk)), 'superseded')
+
+    def test_reassignment_transfers_deadline_owner_and_supersedes_outbox(self):
+        new_reviewer = User.objects.create_user('reviewer2', password='test-password')
+        Profile.objects.create(user=new_reviewer, role='reviewer')
+
+        self.case.refresh_from_db()
+        stage_dl = self.case.deadlines.get(kind='stage', active=True)
+        outbox_alert = Outbox.objects.create(
+            application=self.case,
+            recipient=self.users['reviewer'],
+            identity=f'reminder-{uuid.uuid4()}',
+            title='Approaching deadline',
+            body='Reviewer deadline alert',
+            deadline=stage_dl,
+            revision=stage_dl.revision,
+            state='pending'
+        )
+
+        self.cmd('regional', 'reassign', user_id=new_reviewer.pk)
+        self.case.refresh_from_db()
+        self.assertEqual(self.case.assigned_to, new_reviewer)
+        stage_dl.refresh_from_db()
+        self.assertEqual(stage_dl.owner, new_reviewer)
+
+        outbox_alert.refresh_from_db()
+        self.assertEqual(outbox_alert.state, 'superseded')
+
+
+@override_settings(DEMO_MODE=True,EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',PASSWORD_HASHERS=['django.contrib.auth.hashers.MD5PasswordHasher'])
+class ConfigurableRoutingAndGovernanceTests(Fixtures, TestCase):
+    def setUp(self):
+        self.build_fixtures()
+        self.policy.rules['routes']['with_sac'] = ['SCRUTINY', 'EVC', 'SAC', 'DECISION', 'RATIFICATION']
+        self.policy.rules['routes']['scrutiny_only'] = ['SCRUTINY', 'DECISION', 'RATIFICATION']
+        self.policy.save()
+
+    def test_route_with_sac_progression(self):
+        case = create_case(self.users['institution'], {'category': 'with_sac', 'external_id': 'SAC-TEST-1', 'academic_year': '2026-2027'})
+        self.cmd('institution', 'submit', case=case)
+        case.refresh_from_db()
+        self.assertEqual(case.stage, 'SCRUTINY')
+        self.cmd('reviewer', 'complete_stage', case=case)
+        case.refresh_from_db()
+        self.assertEqual(case.stage, 'EVC')
+
+        start = timezone.now() + timedelta(days=1)
+        end = start + timedelta(hours=2)
+        self.cmd('evc', 'schedule_evc', case=case, starts_at=start.isoformat(), ends_at=end.isoformat())
+        case.visits.update(starts_at=timezone.now() - timedelta(hours=1))
+        self.cmd('evc', 'conduct_evc', case=case, representatives='Reps present')
+        self.cmd('evc', 'report_evc', case=case, report='Inspection conducted according to approved criteria.')
+        self.cmd('evc', 'complete_stage', case=case)
+
+        case.refresh_from_db()
+        self.assertEqual(case.stage, 'SAC')
+        self.assertEqual(case.assigned_to.profile.role, 'committee')
+
+        self.cmd('committee', 'complete_stage', case=case)
+        case.refresh_from_db()
+        self.assertEqual(case.stage, 'DECISION')
+        self.assertEqual(case.assigned_to.profile.role, 'executive')
+
+    def test_exception_recovery_workflow(self):
+        case = create_case(self.users['institution'], {'category': 'unsupported_cat', 'external_id': 'EXC-1', 'academic_year': '2026-2027'})
+        self.cmd('institution', 'submit', case=case)
+        case.refresh_from_db()
+        self.assertEqual(case.stage, 'EXCEPTION')
+        self.assertEqual(case.assigned_to, self.users['regional'])
+
+        resolve_exception(self.users['regional'], case.pk, {'category': 'name_change', 'reason': 'Administrative review corrected category'})
+        case.refresh_from_db()
+        self.assertEqual(case.stage, 'SCRUTINY')
+        self.assertEqual(case.category, 'name_change')
+        self.assertTrue(case.audit.filter(action='exception_resolved').exists())
+
+    def test_audited_policy_migration(self):
+        self.cmd('institution', 'submit')
+        self.case.refresh_from_db()
+        self.assertEqual(self.case.policy, self.policy)
+        new_pol = Policy.objects.create(
+            name='Test Policy v2',
+            version=2,
+            state='active',
+            source='Updated regulations',
+            rules={'routes': {'name_change': ['SCRUTINY', 'DECISION', 'RATIFICATION']}, 'stage_days': 10, 'reminder_days': 4}
+        )
+        migrate_policy(self.users['bureau'], self.case.pk, {'policy_id': new_pol.pk, 'reason': 'Council approved migration to v2'})
+        self.case.refresh_from_db()
+        self.assertEqual(self.case.policy, new_pol)
+        self.assertTrue(self.case.audit.filter(action='policy_migrated').exists())
+
+
+@override_settings(DEMO_MODE=True,EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',PASSWORD_HASHERS=['django.contrib.auth.hashers.MD5PasswordHasher'])
+class EVCLifecycleAndDeadlinesTests(Fixtures, TestCase):
+    def setUp(self):
+        self.build_fixtures()
+        self.case.category = 'evc_only'
+        self.case.save()
+        self.cmd('institution', 'submit')
+        self.case.refresh_from_db()
+
+    def test_evc_deadlines_and_late_scheduled_detection(self):
+        self.assertTrue(self.case.deadlines.filter(kind='evc_scheduling', active=True).exists())
+
+        start = timezone.now() + timedelta(days=20)
+        end = start + timedelta(hours=2)
+        self.cmd('evc', 'schedule_evc', starts_at=start.isoformat(), ends_at=end.isoformat())
+        self.case.refresh_from_db()
+        visit = self.case.visits.get(status='confirmed')
+        self.assertTrue(visit.late_scheduled)
+        self.assertFalse(self.case.deadlines.filter(kind='evc_scheduling', active=True).exists())
+        self.assertTrue(self.case.deadlines.filter(kind='evc_visit', active=True).exists())
+
+    def test_evc_reschedule_and_cancellation(self):
+        start = timezone.now() + timedelta(days=2)
+        end = start + timedelta(hours=2)
+        self.cmd('evc', 'schedule_evc', starts_at=start.isoformat(), ends_at=end.isoformat())
+
+        new_start = timezone.now() + timedelta(days=3)
+        new_end = new_start + timedelta(hours=2)
+        self.cmd('evc', 'reschedule_evc', starts_at=new_start.isoformat(), ends_at=new_end.isoformat(), reason='Severe weather alert')
+        visit = self.case.visits.get(status='confirmed')
+        self.assertEqual(visit.starts_at, new_start)
+
+        self.cmd('evc', 'cancel_evc', reason='Emergency institutional shutdown')
+        visit.refresh_from_db()
+        self.assertEqual(visit.status, 'cancelled')
+        self.assertEqual(visit.cancellation_reason, 'Emergency institutional shutdown')
+
+    def test_evc_conduct_and_report_lifecycle(self):
+        start = timezone.now() + timedelta(days=1)
+        end = start + timedelta(hours=2)
+        self.cmd('evc', 'schedule_evc', starts_at=start.isoformat(), ends_at=end.isoformat())
+        self.case.visits.update(starts_at=timezone.now() - timedelta(hours=1))
+        self.cmd('evc', 'conduct_evc', representatives='Principal and Registrar attended')
+        visit = self.case.visits.get()
+        self.assertEqual(visit.status, 'conducted')
+        self.assertTrue(self.case.deadlines.filter(kind='evc_report', active=True).exists())
+
+        self.cmd('evc', 'report_evc', report='All infrastructural requirements verified on site.')
+        visit.refresh_from_db()
+        self.assertIsNotNone(visit.report_submitted_at)
+        self.assertIn('All infrastructural', visit.report)
+
+
+@override_settings(DEMO_MODE=True,EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',PASSWORD_HASHERS=['django.contrib.auth.hashers.MD5PasswordHasher'])
+class SecurityReviewAndEvidenceStorageTests(Fixtures, TestCase):
+    def setUp(self):
+        self.build_fixtures()
+        self.client.force_login(self.users['institution'])
+        self.obligation = Obligation.objects.create(
+            application=self.case, title='Safety Doc', kind='undertaking', source='rule', verifier=self.users['reviewer']
+        )
+        make_deadline(self.case, 'Evidence due', 'submission', timezone.now() + timedelta(days=1), self.users['institution'], self.obligation)
+
+    def test_pdf_quarantine_manual_security_review_and_acceptance(self):
+        self.cmd('institution', 'submit')
+        self.case.refresh_from_db()
+        res = self.client.post(
+            f'/api/applications/{self.case.pk}/evidence',
+            {'file': SimpleUploadedFile('safety.pdf', b'%PDF-1.5 test document'), 'obligation_id': self.obligation.pk, 'expected_version': self.case.version}
+        )
+        self.assertEqual(res.status_code, 201)
+        ev_id = res.json()['evidence']['id']
+        ev = Evidence.objects.get(pk=ev_id)
+        self.addCleanup(lambda: ev.file.delete(save=False))
+
+        scan_file(str(ev.pk))
+        ev.refresh_from_db()
+        self.assertEqual(ev.safety, 'quarantine')
+
+        with self.assertRaises(DomainError):
+            review_evidence(self.users['reviewer'], ev.pk, {'outcome': 'accepted', 'expected_version': self.case.version, 'reason': 'Premature review'})
+
+        with self.assertRaises(DomainError):
+            security_review_evidence(self.users['institution'], ev.pk, {'decision': 'release', 'reason': 'Self review'})
+
+        security_review_evidence(self.users['reviewer'], ev.pk, {'decision': 'release', 'reason': 'Manual inspection and hash check clean'})
+        ev.refresh_from_db()
+        self.assertEqual(ev.safety, 'security_reviewed')
+        self.assertEqual(ev.security_reviewer, self.users['reviewer'])
+        self.assertIsNotNone(ev.security_reviewed_at)
+
+        self.case.refresh_from_db()
+        review_evidence(self.users['reviewer'], ev.pk, {'outcome': 'accepted', 'expected_version': self.case.version, 'reason': 'Substantive compliance verified'})
+        self.obligation.refresh_from_db()
+        self.assertEqual(self.obligation.status, 'fulfilled')
+
+    def test_security_review_rejection(self):
+        res = self.client.post(
+            f'/api/applications/{self.case.pk}/evidence',
+            {'file': SimpleUploadedFile('unsafe.docx', b'fake docx bytes'), 'obligation_id': self.obligation.pk, 'expected_version': self.case.version}
+        )
+        ev_id = res.json()['evidence']['id']
+        ev = Evidence.objects.get(pk=ev_id)
+        self.addCleanup(lambda: ev.file.delete(save=False))
+
+        scan_file(str(ev.pk))
+        security_review_evidence(self.users['bureau'], ev.pk, {'decision': 'reject', 'reason': 'Suspicious macro payload detected'})
+        ev.refresh_from_db()
+        self.assertEqual(ev.safety, 'security_rejected')
+        self.obligation.refresh_from_db()
+        self.assertEqual(self.obligation.status, 'security_rejected')
+
+    def test_drive_upload_evidence_task(self):
+        ev = Evidence.objects.create(
+            application=self.case,
+            obligation=self.obligation,
+            file='test.txt',
+            name='test.txt',
+            checksum='b'*64,
+            size=10,
+            uploaded_by=self.users['institution'],
+            safety='clean',
+            storage_state='pending'
+        )
+        with patch('website.drive.connected', return_value=True), patch('website.drive.upload_file', return_value=('drive-123', 'md5-123')):
+            upload_pending_evidence()
+        ev.refresh_from_db()
+        self.assertEqual(ev.storage_state, 'stored')
+        self.assertEqual(ev.drive_file_id, 'drive-123')
+        self.assertEqual(ev.drive_md5, 'md5-123')
+
+
+@override_settings(DEMO_MODE=True,EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',PASSWORD_HASHERS=['django.contrib.auth.hashers.MD5PasswordHasher'])
+class ObligationLifecycleTests(Fixtures, TestCase):
+    def setUp(self):
+        self.build_fixtures()
+
+    def test_obligation_lifecycle_states(self):
+        o = Obligation.objects.create(
+            application=self.case, title='Lease', kind='lease', source='rules', verifier=self.users['reviewer']
+        )
+        self.assertEqual(get_obligation_lifecycle(o), 'pending_submission')
+
+        o.status = 'fulfilled'
+        o.valid_until = timezone.localdate() + timedelta(days=100)
+        o.save()
+        self.assertEqual(get_obligation_lifecycle(o), 'fulfilled')
+
+        o.valid_until = timezone.localdate() + timedelta(days=15)
+        o.save()
+        self.assertEqual(get_obligation_lifecycle(o), 'renewal_required')
+
+        o.valid_until = timezone.localdate() - timedelta(days=1)
+        o.save()
+        self.assertEqual(get_obligation_lifecycle(o), 'expired')
+
+        e_init = Evidence.objects.create(
+            application=self.case, obligation=o, file='init.txt', name='init.txt', checksum='a'*64, size=10,
+            uploaded_by=self.users['institution'], safety='clean', review='accepted'
+        )
+        o.accepted_evidence = e_init
+        o.save()
+        e = Evidence.objects.create(
+            application=self.case, obligation=o, file='dummy', name='d.txt', checksum='c'*64, size=10,
+            uploaded_by=self.users['institution'], safety='demo_validated', review='pending'
+        )
+        self.assertEqual(get_obligation_lifecycle(o), 'renewal_pending_verification')
+
+
+@override_settings(DEMO_MODE=True,EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',PASSWORD_HASHERS=['django.contrib.auth.hashers.MD5PasswordHasher'])
+class AnalyticsReportsAndAdapterTests(Fixtures, TestCase):
+    def setUp(self):
+        self.build_fixtures()
+        self.client.force_login(self.users['bureau'])
+
+    def test_dashboard_rich_analytics(self):
+        res = self.client.get('/api/dashboard')
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        for key in ['by_stage', 'stage_ageing', 'workload', 'pendency', 'evc_summary', 'validity_summary', 'regional_performance']:
+            self.assertIn(key, data, f"Key {key} missing from dashboard analytics")
+
+    def test_all_report_types_export_safe_csv(self):
+        report_types = ['applications', 'evc', 'compliance', 'validity', 'escalations', 'regional_performance', 'audit']
+        for rtype in report_types:
+            res = self.client.get(f'/api/reports?type={rtype}')
+            self.assertEqual(res.status_code, 200, f"Report type {rtype} failed with {res.status_code}")
+            self.assertEqual(res['Content-Type'], 'text/csv; charset=utf-8')
+            content = res.content.decode('utf-8')
+            self.assertTrue(len(content) > 0)
+
+    def test_csv_formula_injection_protection(self):
+        from core.views import safe_csv
+        self.assertEqual(safe_csv('=1+1'), "'=1+1")
+        self.assertEqual(safe_csv('+cmd'), "'+cmd")
+        self.assertEqual(safe_csv('-cmd'), "'-cmd")
+        self.assertEqual(safe_csv('@mention'), "'@mention")
+        self.assertEqual(safe_csv('normal'), 'normal')
+
+    def test_aicte_adapter_contract(self):
+        adapter = AICTEAdapter
+        valid_payload = {
+            'source': 'aicte_nsws',
+            'institution_code': 'AICTE-001',
+            'category': 'new_institution',
+            'academic_year': '2026-2027',
+            'external_id': 'EXT-12345'
+        }
+        res = adapter.validate_intake_payload(valid_payload)
+        self.assertEqual(res.institution_code, 'AICTE-001')
+
+        invalid_payload = {'institution_code': 'AICTE-001'}
+        with self.assertRaises(AICTEIntegrationError):
+            adapter.validate_intake_payload(invalid_payload)
+
+        secret = 'test-secret'
+        body = b'{"event":"payment_received","transaction_id":"TXN123"}'
+        import hmac, hashlib
+        sig = hmac.new(secret.encode('utf-8'), body, hashlib.sha256).hexdigest()
+        self.assertTrue(adapter.verify_payment_webhook(body, sig, secret))
+        self.assertFalse(adapter.verify_payment_webhook(body, 'invalid_sig', secret))

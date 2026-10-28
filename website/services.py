@@ -79,7 +79,8 @@ def validate_file(file):
 
 def record(item, user, action, reason, **details):
     audit(item.application, user, 'website_' + action, reason,
-          details={'grievance_id': str(item.pk), 'reference': item.reference, **details})
+          details={'grievance_id': str(item.pk), 'reference': item.reference, **details},
+          scope_type='grievance', institution=item.institution)
 
 
 def recipients(item):

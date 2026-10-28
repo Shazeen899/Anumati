@@ -147,3 +147,42 @@ class DriveClient:
         if content is None or len(content) != doc.size or hashlib.sha256(content).hexdigest() != doc.sha256:
             raise DriveError('Document integrity verification failed.')
         return content
+
+
+def upload_file(file_field, name, mime_type, file_id=None, app_properties=None):
+    client = DriveClient()
+    target_id = file_id or client.reserve_id()
+    existing = client.metadata(target_id)
+    if existing:
+        return target_id, existing.get('md5Checksum', '')
+    boundary = 'anumati_' + uuid.uuid4().hex
+    folder_id = safe_id(settings.GOOGLE_DRIVE_FOLDER_ID)
+    meta = {
+        'id': target_id,
+        'name': name,
+        'parents': [folder_id],
+        'appProperties': app_properties or {},
+    }
+    with file_field.open('rb') as f:
+        content = f.read()
+    payload = (f'--{boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n'.encode()
+               + json.dumps(meta).encode() + f'\r\n--{boundary}\r\nContent-Type: {mime_type}\r\n\r\n'.encode()
+               + content + f'\r\n--{boundary}--\r\n'.encode())
+    result = client.request('POST', 'https://www.googleapis.com/upload/drive/v3/files?' + urlencode({
+        'uploadType': 'multipart', 'supportsAllDrives': 'true', 'fields': 'id,size,md5Checksum,parents,trashed'}),
+        payload, 'multipart/related; boundary=' + boundary)
+    if not result or result.get('trashed') or folder_id not in result.get('parents', []):
+        raise DriveError('Drive upload verification failed.')
+    return result['id'], result.get('md5Checksum', '')
+
+
+def download_stream(doc_or_evidence):
+    client = DriveClient()
+    file_id = getattr(doc_or_evidence, 'drive_file_id', None)
+    if not file_id:
+        raise DriveError('Document has no Google Drive file ID.')
+    content = client.request('GET', API + '/' + safe_id(file_id) + '?alt=media&supportsAllDrives=true', binary=True)
+    if content is None:
+        raise DriveError('Document could not be retrieved from Google Drive.')
+    import io
+    return io.BytesIO(content)

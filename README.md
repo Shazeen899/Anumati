@@ -83,7 +83,18 @@ In separate terminals: `celery -A anumati worker --loglevel=info` and `celery -A
 .\scripts\check.ps1
 ```
 
-Equivalent: `python manage.py check`, `python manage.py test core --noinput -v 2`, and `cd frontend && npm run build`. Tests use real PostgreSQL and create/remove `test_anumati`. The suite includes 100 concurrent authority commands, requiring one decision and 99 conflicts. GitHub Actions installs native PostgreSQL/Redis on Ubuntu with no container services.
+Equivalent: `python manage.py check`, `python manage.py test core website --noinput -v 2`, and `cd frontend && npm run build`. Tests use real PostgreSQL and create/remove `test_anumati`. The suite comprises 61 comprehensive tests including:
+- Workflow progression across Scrutiny, EVC, SHC, and SAC stages.
+- 100 concurrent authority commands requiring exactly one decision and 99 conflicts.
+- Audit confidentiality regression tests isolating general and linked grievance events.
+- Deadline responsibility transfer on return, resubmission, and reassignment with outbox alert supersession.
+- EVC scheduling, visit, and report distinct deadlines with late scheduling detection.
+- Quarantined PDF/DOCX evidence security review and release.
+- Obligation validity 8-state lifecycle without overwriting receipts.
+- Scoped report exports with CSV formula injection protection.
+- AICTE / NSWS external integration contract and HMAC signature verification.
+- Website grievance submission, document staging, and cross-institution isolation.
+GitHub Actions installs native PostgreSQL/Redis on Ubuntu with no container services.
 
 ## Demonstrate the journey
 

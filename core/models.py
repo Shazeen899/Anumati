@@ -80,6 +80,9 @@ class EVCVisit(models.Model):
     report = models.TextField(blank=True)
     representatives = models.TextField(blank=True)
     video_url = models.URLField(blank=True)
+    cancellation_reason = models.TextField(blank=True)
+    late_scheduled = models.BooleanField(default=False)
+    report_submitted_at = models.DateTimeField(null=True)
     created_at = models.DateTimeField(default=timezone.now)
 
 class Decision(models.Model):
@@ -128,6 +131,15 @@ class Evidence(models.Model):
     reviewed_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, related_name='+', on_delete=models.PROTECT)
     valid_from = models.DateField(null=True)
     valid_until = models.DateField(null=True)
+    storage_state = models.CharField(max_length=25, default='local')
+    drive_file_id = models.CharField(max_length=120, blank=True)
+    drive_md5 = models.CharField(max_length=64, blank=True)
+    upload_attempts = models.PositiveIntegerField(default=0)
+    upload_lease_until = models.DateTimeField(null=True)
+    upload_error = models.TextField(blank=True)
+    mime_type = models.CharField(max_length=100, default='application/octet-stream')
+    security_reviewer = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, related_name='+', on_delete=models.PROTECT)
+    security_reviewed_at = models.DateTimeField(null=True, blank=True)
 
 class Deadline(models.Model):
     application = models.ForeignKey(Application, related_name='deadlines', on_delete=models.PROTECT)
@@ -175,6 +187,8 @@ class Escalation(models.Model):
 
 class AuditEvent(models.Model):
     application = models.ForeignKey(Application, null=True, related_name='audit', on_delete=models.PROTECT)
+    institution = models.ForeignKey(Institution, null=True, blank=True, related_name='audit_events', on_delete=models.PROTECT)
+    scope_type = models.CharField(max_length=40, default='application')
     actor = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.PROTECT)
     action = models.CharField(max_length=80)
     reason = models.TextField()

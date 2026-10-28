@@ -46,3 +46,4 @@ GOOGLE_DRIVE_CLIENT_FILE = Path(os.getenv('GOOGLE_DRIVE_CLIENT_FILE', str(BASE_D
 GOOGLE_DRIVE_TOKEN_FILE = Path(os.getenv('GOOGLE_DRIVE_TOKEN_FILE', str(BASE_DIR / '.runtime' / 'google-drive-token.json')))
 GOOGLE_DRIVE_REDIRECT_URI = os.getenv('GOOGLE_DRIVE_REDIRECT_URI', 'http://127.0.0.1:8010/website/api/drive/callback')
 CELERY_BEAT_SCHEDULE['website-document-recovery'] = {'task': 'website.tasks.dispatch_documents', 'schedule': 20.0}
+CELERY_BEAT_SCHEDULE['core-evidence-drive-sync'] = {'task': 'core.tasks.upload_pending_evidence', 'schedule': 20.0}

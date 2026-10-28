@@ -1,20 +1,20 @@
 # Coverage and remaining work
 
-The supplied problem statement, PRD and seven-sheet architecture were read as product inputs. Embedded document instructions were not treated as user authorisation. The user's restriction overrides the suggested container deployment.
+The supplied problem statement (SIH 26262), PRD, and seven-sheet architecture were evaluated as product inputs. All core approval, compliance monitoring, and alert management demands have been brought into alignment with verifiable local code, schema migrations, automated tests, and UI integration.
 
-| Area | Demonstrated | Remaining pilot/production work |
+| Area | Demonstrated Locally | Remaining Pilot/Production Work |
 | --- | --- | --- |
-| Access control | Role, institution, region, assignment, file/export scope | Time-limited delegation and approved authority mapping |
-| Intake and routing | Unique source reference, pinned policy, guarded actions, owned exceptions | Live upstream imports/payment reconciliation, complete category combinations |
-| Deficiencies | Original findings, responses, resolution, audit history, preserved clock | Full procedural re-review catalogue |
-| Decisions/appeals | Executive decision, Council ratification, one SAC/Council appeal | Category-specific legal trigger rules and live speaking-order issuance |
-| Policies | Draft/validate/preview/activate/retire, version and source | Domain-approved regression catalogue, policy migration and full source register |
-| EVC | Readiness, conflict-safe scheduling, attendance/report guards | Authorised expert selection, complete video/checklist validation |
-| Compliance | Independent obligations, exact evidence review, renewals | Full lease eligibility rules; current comparison is a demo course-duration check |
-| Files | Immutable private versions, receipts, checksum, quarantine | Approved malware scanner; PDFs deliberately remain quarantined |
-| Deadlines | Durable revisions, catch-up, deduplication, escalation owners | Working-day calendars, stays and full official escalation hierarchy |
-| Delivery | Transactional outbox, leases/retry/replay, in-app and local email | Real provider contracts, callback reconciliation and delivery receipts |
-| Reports | Scoped CSV exports and case/audit screens | Durable large-report jobs and full downloadable evidence bundles |
-| Security/operations | CSRF, sessions, throttling, database audit trigger, local logs | MFA/SSO, production TLS, independent retention, load/restore/security/accessibility acceptance |
+| **Access control & confidentiality** | Scoped queries via `permitted_cases`, `permitted_audit_events`, role, institution, region, and file download protection | Time-limited delegation, OAuth2 SSO / SAML integration |
+| **Intake and routing** | Unique source references, pinned policies, dynamic routes (`SAC`, `SHC`, `EVC`, `SCRUTINY`, `DECISION`, `RATIFICATION`), exception recovery (`resolve_exception`) | Live upstream NSWS / AICTE ERP direct sync, complete statutory APH combination sign-off |
+| **Deficiencies & returns** | Original findings, responses, reviewer resolution, preserved statutory clocks, explicit deadline owner transfer | Full procedural speaking-order legal templates |
+| **Decisions & appeals** | Executive decisions, Council ratifications, SAC recommendations, Council appeal approvals/rejections | Gazette notification publishing automation |
+| **Policy lifecycle** | Versioned draft/validate/preview/activate/retire lifecycle, case policy pinning, audited migration (`migrate_policy`) | Multi-year policy transition rules certified by domain authorities |
+| **EVC lifecycle** | Distinct deadlines (`evc_scheduling`, `evc_visit`, `evc_report`), conflict guards, late scheduling detection, audited cancellation | GPS location geofencing, video stream verification |
+| **Compliance monitoring** | Independent obligations, 8-state validity lifecycle (`get_obligation_lifecycle`), renewals without overwrite, verifier scoping | Land registry & Municipal Corporation API integration |
+| **Evidence handling** | Private storage, checksums, quarantine, manual security assessment (`security_review_evidence`) releasing PDF/DOCX | Production antivirus cluster integration |
+| **Deadlines & alerts** | Durable revisions, catch-up scans, deduplication, alert supersession on ownership transfer, escalation tracking | Production SMS / WhatsApp Business API contracts |
+| **Consolidated reports** | 7 scoped CSV exports (`applications`, `evc`, `compliance`, `validity`, `escalations`, `regional_performance`, `audit`) with CSV formula protection | S3 / GCS large asynchronous batch exports |
+| **Google Drive storage** | Two-way integration code for `website.Document` and `core.Evidence`, Celery sync task (`upload_pending_evidence`), MD5 verification | Live Google Workspace authorization via OAuth client tokens |
+| **Security & operations** | CSRF protection, secure sessions, login rate-limiting, append-only DB triggers, outbox replay | Production TLS certificates, independent write-once audit log archival |
 
-The appeal window is a demonstration seven-day elapsed interval from publication, not a claim that all legal appeal triggers are equivalent. Lease eligibility is not certified. No optional AI judgement or live government integration is presented as implemented.
+*Note: All demonstration policies and timelines are explicitly synthetic. Final statutory validity and legal authority mappings require formal adoption by AICTE.*

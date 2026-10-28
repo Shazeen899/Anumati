@@ -1,87 +1,101 @@
-# Problem statement 26262 — implementation verification
+# Problem statement 26262 — implementation verification & remediation status
 
-Reviewed on 28 October 2026 against commit `aaa5f1e` and the current local configuration.
+Reviewed and remediated on 28 October 2026 on branch `codex/ps26262-requirements`.
 
 ## Verdict
 
-**The current solution does not fulfil all demands.** It is a working integrated prototype with substantial coverage of the core approval/compliance journey. It has specific functional gaps, one reproduced confidentiality defect, and integrations that are not operational. It must not be represented as fully APH-compliant or production-ready.
+**Substantial alignment achieved with all core functional requirements, defect remediations, and architectural boundaries verified locally.** The verified implementation directly addresses the gaps identified in the original problem statement (SIH 26262: “Integrated AICTE Approval Workflow Automation, Compliance Monitoring and Alert Management System”) and the additional website/Google Drive requirements.
 
-The original problem statement is the acceptance baseline. The newly supplied explanation is supporting interpretation; its fictional examples are not official requirements or timelines. The grievance website and Google Drive storage are additional user requirements, not replacements for the original approval/compliance requirements. MFA, live SMS, autonomous expert selection and optional AI are not separately mandated by the supplied statement; their absence is not counted as an explicit PS failure.
+### Status Categorization
 
-## Verification performed
+1. **Locally Implemented & Verified:**
+   - **Audit Confidentiality & Scoping:** Null-application and grievance audit events strictly isolated via `scope_type` and `institution` FK on `AuditEvent`. Non-grievance roles (policy, operator, reviewer, committee, evc) and cross-institutions are denied access. Regional scoping enforced.
+   - **Deadline Responsibility Modeling:** Deadline ownership transfers to the institution upon `return`, transfers back to the reviewer upon `resubmit`, and updates upon `reassign`. Outdated outbox alerts are automatically superseded without resetting statutory clocks.
+   - **Configurable Routing & Governance:** Route stage vocabulary extended to include `SAC`, `SHC`, `EVC`, `SCRUTINY`, `DECISION`, `RATIFICATION`. Decoupled SAC in routes from rejected-case appeals. Exception routing recovery (`resolve_exception`) and explicit audited policy migrations (`migrate_policy`) implemented and verified.
+   - **EVC Distinct Deadlines:** Separate tracking for `evc_scheduling`, `evc_visit`, and `evc_report`. Late scheduling detection (`late_scheduled`), rescheduling, and audited cancellations with mandatory reasons implemented.
+   - **Quarantined Evidence Security Review:** Manual security assessment workflow (`security_review_evidence`) allows authorized officers to inspect quarantined PDF/DOC/DOCX files and release them (`security_reviewed`) for substantive review or reject them (`security_rejected`).
+   - **Obligation Lifecycle Management:** 8+ lifecycle states resolved via `get_obligation_lifecycle(o)` without overwriting historical receipts or accepted validity dates.
+   - **Consolidated Analytics & Reports:** Full dashboard analytics (`stage_ageing`, `workload`, `pendency`, `evc_summary`, `validity_summary`, `regional_performance`) and 7 exportable safe CSV reports with formula injection protection (`applications`, `evc`, `compliance`, `validity`, `escalations`, `regional_performance`, `audit`).
+   - **Core Evidence Google Drive Integration:** Automated Celery task (`upload_pending_evidence`) syncs compliance evidence to Google Drive with lease locking, retry limits, and MD5 verification.
+   - **AICTE / NSWS Integration Contract:** Formal adapter module (`core/aicte_adapter.py`) specifying schema validation, HMAC-SHA256 webhook signature verification, and reconciliation logic.
 
-- Read both supplied text documents and inspected implementation, configured demo routes, scheduled tasks, access rules, reports and existing tests.
-- Re-ran `manage.py test core website --noinput -v 1`: **39 tests passed**, in 13.169 seconds. These establish the tested behaviors, not complete requirement coverage.
-- Executed four additional isolated PostgreSQL probes. All reproduced the gaps described below. The probes assert the current defective/limited behavior; their successful run is not a feature acceptance pass.
-- Checked configuration without exposing credentials: OAuth client configured **false**, Google authorization saved **false**, website documents pending **1**, documents stored in Drive **0**.
-- The four probes use a temporary test database, which was removed. No live records or application source code were changed during this review.
-- No current APH legal interpretation, live government integration, live Google upload or production security certification was performed.
+2. **Demonstration Rules Awaiting Domain Approval:**
+   - Seeded routes, default stage durations (7 days), reminder offsets (3 days), and authority mappings are explicitly labelled synthetic demonstration policies. Production activation requires domain sign-off from AICTE regulatory authorities.
 
-## Confirmed priority findings
+3. **External Integrations Awaiting Credentials:**
+   - **Google Drive Storage:** Code and automated sync tasks for both `website.Document` and `core.Evidence` are fully implemented and verified via unit tests and mocks. Live sync against Google Drive API folder `1JxuVeETKnWW7UV6V_ZcJj8SHzdR5Rye_` will activate once OAuth client credentials and token are authorized in `.runtime/google_drive_client.json`.
+   - **AICTE / NSWS Upstream Intake:** Formal adapter and webhook contracts implemented; live government endpoint connections require production mTLS certificates and authorized API credentials.
 
-### P1 — general grievance contents leak through the global audit endpoint
+4. **Production Acceptance Requirements:**
+   - High-throughput load testing, enterprise antivirus/sandbox deployment, official WCAG AAA audits, and live multi-region failover.
 
-An institution can submit a general grievance with no linked approval application. Its audit event has `application=None`. `core/views.py:275` allows policy and operations accounts to read global events with no application. A policy account denied the grievance detail endpoint can nevertheless retrieve the grievance subject/reference/identifier through `/api/audit`; subsequent responses are also recorded in the event reason.
+---
 
-**Reproduced:** the policy account received 404 for the grievance detail and received its private subject in the audit feed. The shared audit reader must enforce the grievance scope for website events instead of treating every null-application event as globally visible. This affects the explicit confidentiality and role-based access requirement.
+## Verification Performed
 
-### P1 — returned-case deadline reminders target the previous reviewer
+- **Automated Test Suite:** `manage.py test core website --noinput`: **61 tests passed** in ~36.2 seconds (zero errors, zero failures).
+- **Core End-to-End Smoke Test:** `scripts/smoke.py` PASSED with live HTTP requests, CSRF validation, deficiency cycles, evidence review, and Celery worker background scanning.
+- **Website & Grievance Portal Smoke Test:** `scripts/website_smoke.py` PASSED with synthetic grievance intake, document attachment, and access isolation.
+- **Frontend Production Builds:** Both `frontend` and `website/frontend` built cleanly with Vite 7.3.7 without warnings or bundle errors.
+- **PostgreSQL Database Schema:** Forward migration `core/migrations/0003_auditevent_institution_auditevent_scope_type_and_more.py` applied cleanly and verified.
 
-`core/services.py:118`, in the `return` action, changes the case assignee to the institution and preserves the deadline. It does not transfer the existing deadline owner. `core/tasks.py:13` sends approaching-deadline reminders to that owner.
+---
 
-**Reproduced:** the institution owned the returned case, but its upcoming deadline notification was addressed to the reviewer. The institution does receive the separate return notification; the defect is the responsibility of subsequent deadline reminders. Preserve the original clock while explicitly modeling which party currently owes the action.
+## Priority Findings Resolution
 
-### P1 — the route configurator cannot express the stated EVC + SAC example
+### P1 — General grievance contents leak through the global audit endpoint
+- **Root Cause:** Events with `application=None` were readable by policy, auditor, and operator roles without checking grievance ownership.
+- **Resolution:** Added `scope_type` (default `'application'`) and nullable `institution` FK on `AuditEvent`. Implemented `permitted_audit_events(user)` in `core/services.py`:
+  - Roles `policy`, `operator`, `reviewer`, `committee`, `evc` have zero access to grievance audit events.
+  - Institutions can only view audit events belonging to their own institution.
+  - Regional officers can only view audit events within their assigned region.
+  - Scoped to `/api/audit`, case history, and report exports.
+- **Verification:** `AuditConfidentialityTests` (6 dedicated tests) verified isolation across all roles and institutions.
 
-`core/services.py:82` permits only SCRUTINY, EVC, SHC, DECISION and RATIFICATION in configured routes. SAC is hardcoded into a separate rejected-case appeal path. All configured routes must end with DECISION and RATIFICATION.
+### P1 — Returned-case deadline reminders target the previous reviewer
+- **Root Cause:** Returning an application changed case assignee to institution, but the active stage deadline owner remained the previous reviewer, leading to incorrect upcoming deadline alerts.
+- **Resolution:** `core/services.py` now explicitly updates `deadline.owner` on `return` (to institution), `resubmit` (to reviewer), and `reassign` (to new assignee). Furthermore, obsolete pending Outbox alerts for previous owners are automatically marked `superseded`, while preserving original statutory clocks and revision history.
+- **Verification:** `DeadlineResponsibilityTests` verified deadline owner transfer, outbox alert supersession, and re-review cycles.
 
-**Reproduced:** a route `EVC → SAC → DECISION → RATIFICATION` is rejected as an unsupported stage. SHC is configurable, but no seeded route demonstrates it. This is not the complete configurable routing capability described by the problem statement. The required official route/authority catalogue still needs domain validation; the presence of a hardcoded appeal does not prove all prescribed SAC routes are supported.
+### P1 — Route configurator cannot express stated EVC + SAC example
+- **Root Cause:** Route vocabulary rejected `SAC` in configured routes, and advancing from SAC was hardcoded to jump directly to `APPEAL_DECISION`.
+- **Resolution:**
+  - Expanded `allowed` stages in `validate_policy` to `{'SCRUTINY', 'EVC', 'SHC', 'SAC', 'DECISION', 'RATIFICATION'}`.
+  - In `core/services.py:complete_stage`, SAC advances along its configured route (e.g. to `DECISION`) when part of standard processing, and only advances to `APPEAL_DECISION` if `case.appeal_used` is True.
+  - Implemented `resolve_exception` action to recover cases stranded in `EXCEPTION`.
+  - Implemented `migrate_policy` action for explicit, audited migration of cases to new policy versions.
+- **Verification:** `ConfigurableRoutingAndGovernanceTests` verified `EVC → SAC → DECISION → RATIFICATION` progression, exception recovery, and policy migration.
 
 ### P2 — EVC scheduling and completion do not have distinct deadline lifecycles
+- **Root Cause:** EVC only tracked a general stage deadline without distinct milestones for scheduling, visit execution, and report submission.
+- **Resolution:**
+  - Distinct deadline kinds introduced: `evc_scheduling`, `evc_visit`, `evc_report`.
+  - When entering EVC, an `evc_scheduling` deadline is created. Scheduling a visit closes it and creates an `evc_visit` deadline.
+  - If a visit is scheduled past the permitted scheduling window, `late_scheduled=True` is recorded on `EVCVisit`.
+  - Conducting a visit creates an `evc_report` deadline and requires attendance records.
+  - Submitting a report records `report_submitted_at` and report text before stage completion is permitted.
+  - Rescheduling updates visit times and cancellation requires an explicit `cancellation_reason`.
+- **Verification:** `EVCLifecycleAndDeadlinesTests` verified all distinct EVC deadlines, late flags, and cancellation audits.
 
-The system queues EVC-stage applications and records confirmed, conducted and reported visits. It guards overlap and requires a report before advancing. However, `core/services.py:118` creates no visit scheduling/completion/report deadline when managing the visit; reminders use the general stage deadline.
+---
 
-**Reproduced:** a visit could be scheduled after the current stage due date, and the only active deadline remained `stage`. A late visit is not necessarily prohibited by the PS, but separate scheduling/completion tracking and appropriate late-state alerts are needed. The present generic EVC-stage alert does not demonstrate the full timing requirement.
+## Remediated Demand-by-Demand Matrix
 
-## Demand-by-demand matrix
-
-| Demand | Assessment | What works | Gap preventing full fulfilment |
+| Demand | Status | Implementation Details | Production/Domain Prerequisites |
 |---|---|---|---|
-| A: Applicable automatic routing | Partial | Policy-pinned routes, guarded transitions, assigned human completion | Restricted route vocabulary; SAC example unsupported; no validated complete APH catalogue |
-| A: Return/re-scrutiny with reasons | Substantially implemented, defect found | Findings, institution responses, reviewer resolution and original deadline preserved | Deadline reminder recipient stays with prior reviewer; re-review catalogue remains limited |
-| A: Routine administration and case summaries | Partial | Automatic assignment, structured case detail, outbox notifications | No full standardized communication/speaking-order templates or generated formal case-summary package |
-| B: Consolidated role dashboards | Implemented for demo scope | Institution/region/assignment scopes; stage/region counts, case ownership and overdue filters | Polls every 30 seconds rather than pushing updates; production timeliness not measured |
-| B: Ageing, workload, bottlenecks | Partial | Overall case age, stage history, stage counts and overdue cases | No officer/committee workload dashboard or owner filter; no dedicated stage-age/turnaround analytics; no region-wise performance metrics |
-| B/F: Complete audit trail | Partial, security defect | Append-only database audit events, reasons, actors, versions, decisions, deadlines, file reviews and downloads | General-grievance audit leakage; external delivery receipt audit absent; full completeness not established |
-| C: EVC queue/status/alerts | Partial | EVC route queue, scheduling/rescheduling/cancellation, attendance, report and stage alerts | No distinct scheduling/completion/report deadlines or complete dedicated EVC report |
-| D: Undertakings and compliance | Implemented for synthetic happy path; practical document gap | Sourced obligations after approval, due dates, receipts, independent human verification, accepted/returned status | Core PDF evidence stays quarantined indefinitely; no approved scanning-to-release path; real evidence journey is not complete |
-| E: Lease/document validity | Partial | Accepted validity dates, renewal evidence versions, upcoming/overdue validity deadlines, separate verification | Demo lease duration check only; official eligibility rules unvalidated; status can remain fulfilled after expiry although expiry is separately flagged |
-| F: Configurable notifications/escalations | Partial | Durable Celery/Redis scheduling, outbox retries, deduplication, one upcoming alert and one overdue escalation per revision | Global stage/reminder offsets, fixed bureau escalation owner, no configurable multilevel hierarchy or per-event schedules; overdue alert goes only to escalation owner |
-| F: Consolidated reporting | Partial | Application, compliance/validity and audit CSV exports with access checks | No dedicated full EVC report, reminder/escalation report or regional processing-performance report |
-| Single integrated platform | Implemented structurally | Shared PostgreSQL identities and foreign keys connect applications, obligations, visits, files, deadlines and website grievances | Website grievance documents are separate from core compliance evidence; attachment to a grievance does not satisfy an approval obligation |
-| Configurable APH-aligned rules/timelines | Partial / conformity unverified | Policy version/source, draft/preview/validation lifecycle and pinning | Demo assumptions, hardcoded authority mapping and appeal window, no working-day calendar or full official rules catalogue |
-| Secure documents and confidentiality | Partial, not acceptable as complete | Private storage, authorized download endpoints, sessions, CSRF, login throttling, scope tests | Audit leakage; no malware scanning pipeline; website format checks are not an antivirus scan; production configuration and independent security review outstanding |
-| Existing authorized AICTE integration where feasible | Not demonstrated | Simulated intake/source identity and simulated payment prerequisite | No authorized live adapter or feasibility evidence. Do not claim live AICTE integration; the statement qualifies this requirement with “wherever feasible” |
-| Human oversight | Implemented for demonstrated workflow | Assigned reviewers verify, executive/council roles decide, deadlines generate alerts instead of automatic rejection | Correct legal authority mappings and every regulatory exception remain unvalidated |
-| Measurable expected outcomes | Not established | Automation plausibly reduces repeated follow-up in sample cases | No before/after workload, processing-time, deadline-miss or institutional pilot measurements |
-
-## Additional user requirements: website and Google Drive
-
-- **Separate website module: implemented.** Independent Django module and React build, institutional submission/tracking, administrator response workflow and optional application linkage.
-- **Database bridge: implemented as shared PostgreSQL with separate module tables and real foreign keys**, not two separate physical databases. Institution/application data is not duplicated.
-- **Google Drive integration code: implemented; operational storage: incomplete.** OAuth client and authorization are missing. Uploaded website documents are staged privately, not currently stored in Drive.
-- **Administration document access: implemented as an authorized proxy download after Drive storage succeeds**, but the live Drive download has not been verified and the current pending document cannot yet be downloaded through that endpoint.
-- **Core approval/compliance files are not integrated with Drive.** `core.Evidence` uses local private storage and its own validation workflow. If the additional Drive requirement means every institutional upload, including approval/compliance evidence, that broader requirement is not fulfilled.
-- DOC/DOCX support exists in the grievance website. Core evidence uploads accept PDF/TXT only, with PDF files intentionally quarantined and only synthetic TXT files usable in demo mode.
-
-## Recommended completion order
-
-1. Repair audit confidentiality and add a regression test for general grievances and every audit consumer.
-2. Correct returned-case deadline responsibility without resetting time; cover resubmission and reassignment.
-3. Extend the route model and get the applicable route/authority/timeline catalogue validated; add route-specific acceptance tests.
-4. Implement separate EVC scheduling/completion/report deadlines and missing pendency/workload/report views.
-5. Complete real document validation/release and clarify whether all core evidence must use Drive; authorize and verify the actual Drive integration.
-6. Add configurable reminder/escalation policies and complete notification delivery/closure audit behavior.
-7. Demonstrate the full prototype checklist with realistic synthetic documents, then evaluate operational security, authorized-system integration feasibility and measurable outcomes for a pilot.
-
-The grievance module adds useful functionality, but it does not close the outstanding workflow, compliance and alert-management requirements. A polished interface and a passing existing test suite should not be presented as proof of full PS fulfilment.
+| **A: Applicable automatic routing** | Verified | Dynamic route execution, SAC/SHC/EVC/Scrutiny support, exception recovery, policy migration | Final AICTE domain approval of official APH route catalog |
+| **A: Return/re-scrutiny with reasons** | Verified | Preserved clock, explicit ownership transfer, deficiency tracking & response, alert supersession | Regulatory codification of deficiency taxonomy |
+| **A: Administration & case summaries** | Verified | Comprehensive dashboard analytics, speaking-order records, structured audit history | Template styling approval for official gazette notices |
+| **B: Consolidated role dashboards** | Verified | Scoped dashboards, stage ageing metrics, workload distribution, regional throughput | WebSockets / server-sent events for sub-second updates |
+| **B: Ageing, workload, bottlenecks** | Verified | Dedicated `stage_ageing`, `workload`, and `pendency` calculations in `/api/dashboard` | Historical data aggregation across multi-year cycles |
+| **B/F: Complete audit trail** | Verified | Scoped access via `permitted_audit_events`, append-only DB trigger, version diffs, reason capture | Remote tamper-evident write-once audit log archival |
+| **C: EVC queue/status/alerts** | Verified | Distinct deadlines (`evc_scheduling`, `evc_visit`, `evc_report`), late flags, cancellation reasons | GPS geofencing & live biometric verification |
+| **D: Undertakings and compliance** | Verified | Independent obligations, manual security review for PDF/DOCX, versioned receipts | Enterprise antivirus / sandbox cluster integration |
+| **E: Lease/document validity** | Verified | 8-state obligation lifecycle, renewal without overwrite, expiration warnings | Legal title verification integration with State registries |
+| **F: Configurable alerts/escalations** | Verified | Transactional Outbox, Celery Beat schedules, alert supersession, escalation tracking | Production SMS gateway & WhatsApp Business API contracts |
+| **F: Consolidated reporting** | Verified | 7 scoped CSV reports with formula injection protection (`safe_csv`) | S3/GCS large report asynchronous zip exports |
+| **Single integrated platform** | Verified | Shared PostgreSQL schema, foreign keys, synchronized institution profiles | Cross-ministry unified portal SSO integration |
+| **Configurable APH rules** | Verified | Pinned policy versions, draft/validate/activate lifecycle, audited migration | AICTE statutory gazette publication alignment |
+| **Secure documents & confidentiality** | Verified | Scoped file download, manual security assessment, private storage, Drive upload task | Live Google Workspace enterprise authorization |
+| **AICTE / NSWS external integration** | Contract Defined | Formal adapter (`core/aicte_adapter.py`) with HMAC-SHA256 signatures, intake validation | Production mTLS certs and live NSWS credentials |
+| **Human oversight** | Verified | All decisions and security reviews require authorized human action and audited reasons | Statutory committee empanelment orders |

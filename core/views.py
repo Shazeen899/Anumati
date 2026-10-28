@@ -105,18 +105,55 @@ def applications(request):
     return JsonResponse({'items': [case_json(c) for c in qs[(page-1)*30:page*30]], 'total': qs.count(), 'page': page})
 
 def evidence_json(e):
-    return {'id': str(e.pk), 'name': e.name, 'size': e.size, 'checksum': e.checksum, 'received_at': e.received_at.isoformat(), 'safety': e.safety, 'scan_note': e.scan_note, 'review': e.review, 'finding': e.finding, 'reviewed_at': e.reviewed_at.isoformat() if e.reviewed_at else None, 'obligation_id': e.obligation_id, 'valid_from': e.valid_from, 'valid_until': e.valid_until}
+    return {
+        'id': str(e.pk), 'name': e.name, 'size': e.size, 'checksum': e.checksum,
+        'received_at': e.received_at.isoformat(), 'safety': e.safety, 'scan_note': e.scan_note,
+        'review': e.review, 'finding': e.finding,
+        'reviewed_at': e.reviewed_at.isoformat() if e.reviewed_at else None,
+        'obligation_id': e.obligation_id, 'valid_from': e.valid_from, 'valid_until': e.valid_until,
+        'storage_state': getattr(e, 'storage_state', 'local'),
+        'drive_file_id': getattr(e, 'drive_file_id', ''),
+        'mime_type': getattr(e, 'mime_type', 'application/octet-stream'),
+        'security_reviewer': e.security_reviewer.get_full_name() if getattr(e, 'security_reviewer', None) else None,
+        'security_reviewed_at': e.security_reviewed_at.isoformat() if getattr(e, 'security_reviewed_at', None) else None
+    }
 
 def obligation_json(o):
     d = o.deadlines.filter(kind='submission').order_by('-id').first()
     latest = o.submissions.order_by('-received_at').first()
-    return {'id': o.pk, 'application_id': str(o.application_id), 'reference': o.application.reference, 'institution': o.application.institution.name, 'title': o.title, 'kind': o.kind, 'status': o.status, 'source': o.source, 'due_at': d.due_at if d else None, 'overdue': bool(d and d.active and d.due_at < timezone.now()), 'submitted_at': latest.received_at if latest else None, 'submitted_on_time': (latest.received_at <= d.due_at) if latest and d else None, 'valid_from': o.valid_from, 'valid_until': o.valid_until, 'expired': bool(o.valid_until and o.valid_until < timezone.localdate()), 'accepted_evidence_id': str(o.accepted_evidence_id) if o.accepted_evidence_id else None, 'verifier_id': o.verifier_id, 'verifier': o.verifier.get_full_name(), 'finding': o.finding, 'submissions': [evidence_json(e) for e in o.submissions.order_by('-received_at')]}
+    lifecycle = get_obligation_lifecycle(o)
+    return {
+        'id': o.pk, 'application_id': str(o.application_id), 'reference': o.application.reference,
+        'institution': o.application.institution.name, 'title': o.title, 'kind': o.kind,
+        'status': o.status, 'lifecycle': lifecycle, 'source': o.source, 'due_at': d.due_at if d else None,
+        'overdue': bool(d and d.active and d.due_at < timezone.now()),
+        'submitted_at': latest.received_at if latest else None,
+        'submitted_on_time': (latest.received_at <= d.due_at) if latest and d else None,
+        'valid_from': o.valid_from, 'valid_until': o.valid_until,
+        'expired': bool(o.valid_until and o.valid_until < timezone.localdate()),
+        'accepted_evidence_id': str(o.accepted_evidence_id) if o.accepted_evidence_id else None,
+        'verifier_id': o.verifier_id, 'verifier': o.verifier.get_full_name(), 'finding': o.finding,
+        'submissions': [evidence_json(e) for e in o.submissions.order_by('-received_at')]
+    }
 
 @endpoint()
 def application_detail(request, pk):
     c = permitted_case(request.user, pk)
     result = case_json(c)
-    result.update({'route': c.route, 'stage_index': c.stage_index, 'policy': {'name': c.policy.name, 'version': c.policy.version, 'source': c.policy.source, 'demo': c.policy.demo} if c.policy else None, 'external_id': c.external_id, 'appeal_used': c.appeal_used, 'published_at': c.published_at, 'deficiencies': list(c.deficiencies.order_by('id').values('id', 'finding', 'requirement', 'response', 'resolved', 'resolution', 'evidence_id')), 'stages': list(c.stages.order_by('id').values('stage', 'entered_at', 'completed_at', 'finding')), 'evidence': [evidence_json(e) for e in c.evidence.order_by('-received_at')], 'obligations': [obligation_json(o) for o in c.obligations.select_related('application__institution', 'verifier')], 'visits': list(c.visits.order_by('-id').values('id', 'starts_at', 'ends_at', 'status', 'report', 'representatives', 'video_url')), 'decisions': list(c.decisions.order_by('id').values('kind', 'outcome', 'reason', 'actor__first_name', 'created_at', 'case_version')), 'deadlines': list(c.deadlines.order_by('-active', 'due_at').values('id', 'title', 'kind', 'due_at', 'active', 'revision', 'source')), 'audit': list(c.audit.order_by('-created_at')[:100].values('id', 'action', 'reason', 'actor__username', 'created_at', 'before_version', 'after_version', 'details', 'correlation_id'))})
+    permitted_events = permitted_audit_events(request.user).filter(application=c)
+    result.update({
+        'route': c.route, 'stage_index': c.stage_index,
+        'policy': {'name': c.policy.name, 'version': c.policy.version, 'source': c.policy.source, 'demo': c.policy.demo} if c.policy else None,
+        'external_id': c.external_id, 'appeal_used': c.appeal_used, 'published_at': c.published_at,
+        'deficiencies': list(c.deficiencies.order_by('id').values('id', 'finding', 'requirement', 'response', 'resolved', 'resolution', 'evidence_id')),
+        'stages': list(c.stages.order_by('id').values('stage', 'entered_at', 'completed_at', 'finding')),
+        'evidence': [evidence_json(e) for e in c.evidence.order_by('-received_at')],
+        'obligations': [obligation_json(o) for o in c.obligations.select_related('application__institution', 'verifier')],
+        'visits': list(c.visits.order_by('-id').values('id', 'starts_at', 'ends_at', 'status', 'report', 'representatives', 'video_url', 'cancellation_reason', 'late_scheduled', 'report_submitted_at')),
+        'decisions': list(c.decisions.order_by('id').values('kind', 'outcome', 'reason', 'actor__first_name', 'created_at', 'case_version')),
+        'deadlines': list(c.deadlines.order_by('-active', 'due_at').values('id', 'title', 'kind', 'due_at', 'active', 'revision', 'source', 'owner__first_name')),
+        'audit': list(permitted_events.order_by('-created_at')[:100].values('id', 'action', 'reason', 'actor__username', 'created_at', 'before_version', 'after_version', 'details', 'correlation_id'))
+    })
     return JsonResponse(result)
 
 @endpoint(('POST',))
@@ -129,9 +166,66 @@ def dashboard(request):
     now = timezone.now()
     active = qs.exclude(stage__in=['APPROVED', 'REJECTED', 'WITHDRAWN', 'DRAFT'])
     deadlines = Deadline.objects.filter(application__in=qs, active=True)
-    obligations = Obligation.objects.filter(application__in=qs)
+    obligations = Obligation.objects.filter(application__in=qs).select_related('application__institution', 'verifier')
     upcoming = deadlines.order_by('due_at')[:8]
-    return JsonResponse({'as_of': now, 'total': qs.count(), 'active': active.count(), 'approved': qs.filter(stage='APPROVED').count(), 'overdue': deadlines.filter(due_at__lt=now).values('application').distinct().count(), 'evc_pending': qs.filter(stage='EVC').count(), 'open_obligations': obligations.exclude(status='fulfilled').count(), 'by_stage': list(qs.values('stage').annotate(count=Count('id')).order_by('stage')), 'by_region': list(qs.values('institution__region').annotate(count=Count('id')).order_by('institution__region')), 'deadlines': [{'id': d.pk, 'title': d.title, 'due_at': d.due_at, 'reference': d.application.reference, 'application_id': str(d.application_id), 'institution': d.application.institution.name, 'overdue': d.due_at < now, 'owner': d.owner.get_full_name()} for d in upcoming], 'recent': [case_json(c) for c in qs.order_by('-updated_at')[:6]], 'audit': list(AuditEvent.objects.filter(application__in=qs).order_by('-created_at')[:6].values('action', 'reason', 'application__reference', 'created_at', 'actor__username'))})
+
+    stage_ageing = []
+    for stage_data in qs.exclude(stage__in=['APPROVED', 'REJECTED', 'WITHDRAWN']).values('stage').annotate(count=Count('id')).order_by('stage'):
+        st = stage_data['stage']
+        cases_in_st = list(qs.filter(stage=st))
+        ages = [(now - c.created_at).days for c in cases_in_st]
+        avg_age = round(sum(ages) / len(ages), 1) if ages else 0
+        max_age = max(ages) if ages else 0
+        stage_ageing.append({'stage': st, 'count': stage_data['count'], 'avg_age_days': avg_age, 'max_age_days': max_age})
+
+    workload = []
+    for user_data in active.filter(assigned_to__isnull=False).values('assigned_to__id', 'assigned_to__first_name', 'assigned_to__last_name', 'assigned_to__profile__role').annotate(count=Count('id')).order_by('-count')[:10]:
+        name = f"{user_data['assigned_to__first_name']} {user_data['assigned_to__last_name']}".strip() or 'Officer'
+        workload.append({'user_id': user_data['assigned_to__id'], 'name': name, 'role': user_data['assigned_to__profile__role'], 'count': user_data['count']})
+
+    institution_pendency = qs.filter(stage='RETURNED').count()
+    authority_pendency = active.exclude(stage='RETURNED').count()
+
+    evc_qs = qs.filter(stage='EVC')
+    evc_summary = {
+        'scheduling_pending': evc_qs.exclude(visits__status__in=['confirmed', 'conducted', 'reported']).count(),
+        'visit_pending': EVCVisit.objects.filter(application__in=qs, status='confirmed').count(),
+        'report_pending': EVCVisit.objects.filter(application__in=qs, status='conducted').count(),
+        'reported': EVCVisit.objects.filter(application__in=qs, status='reported').count()
+    }
+
+    validity_summary = {'total': obligations.count(), 'fulfilled': 0, 'expiring_soon': 0, 'expired': 0, 'renewal_pending': 0, 'pending_submission': 0}
+    for o in obligations:
+        lc = get_obligation_lifecycle(o)
+        if lc in validity_summary:
+            validity_summary[lc] += 1
+        elif lc == 'renewal_required':
+            validity_summary['expiring_soon'] += 1
+
+    regional_perf = []
+    regions = set(qs.values_list('institution__region', flat=True).distinct())
+    for r in sorted(regions):
+        rqs = qs.filter(institution__region=r)
+        tot = rqs.count()
+        appr = rqs.filter(stage='APPROVED').count()
+        rej = rqs.filter(stage='REJECTED').count()
+        avg_days = round(sum((now - c.created_at).days for c in rqs) / tot, 1) if tot else 0
+        regional_perf.append({'region': r or 'Other', 'total': tot, 'approved': appr, 'rejected': rej, 'active': tot - appr - rej, 'avg_days': avg_days})
+
+    return JsonResponse({
+        'as_of': now, 'total': qs.count(), 'active': active.count(),
+        'approved': qs.filter(stage='APPROVED').count(), 'rejected': qs.filter(stage='REJECTED').count(),
+        'overdue': deadlines.filter(due_at__lt=now).values('application').distinct().count(),
+        'evc_pending': evc_qs.count(), 'open_obligations': obligations.exclude(status='fulfilled').count(),
+        'by_stage': list(qs.values('stage').annotate(count=Count('id')).order_by('stage')),
+        'by_region': list(qs.values('institution__region').annotate(count=Count('id')).order_by('institution__region')),
+        'stage_ageing': stage_ageing, 'workload': workload,
+        'pendency': {'institution': institution_pendency, 'authority': authority_pendency},
+        'evc_summary': evc_summary, 'validity_summary': validity_summary, 'regional_performance': regional_perf,
+        'deadlines': [{'id': d.pk, 'title': d.title, 'kind': d.kind, 'due_at': d.due_at, 'reference': d.application.reference, 'application_id': str(d.application_id), 'institution': d.application.institution.name, 'overdue': d.due_at < now, 'owner': d.owner.get_full_name()} for d in upcoming],
+        'recent': [case_json(c) for c in qs.order_by('-updated_at')[:6]],
+        'audit': list(permitted_audit_events(request.user).filter(application__in=qs).order_by('-created_at')[:6].values('action', 'reason', 'application__reference', 'created_at', 'actor__username'))
+    })
 
 @endpoint()
 def metadata(request):
@@ -156,7 +250,9 @@ def upload(request, pk):
     require(profile(request.user).role == 'institution', 'Only the institution may submit evidence.', 403)
     file = request.FILES.get('file')
     require(file and 0 < file.size <= 10*1024*1024, 'Choose a nonempty file up to 10 MB.')
-    require(Path(file.name).suffix.lower() in ['.pdf', '.txt'], 'Only PDF or UTF-8 text files are accepted.')
+    suffix = Path(file.name).suffix.lower()
+    mime_map = {'.pdf': 'application/pdf', '.doc': 'application/msword', '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', '.txt': 'text/plain'}
+    require(suffix in mime_map, 'Upload PDF, DOC, DOCX or UTF-8 text files.')
     obligation = None
     if request.POST.get('obligation_id'):
         obligation = case.obligations.filter(pk=request.POST['obligation_id']).first()
@@ -168,7 +264,11 @@ def upload(request, pk):
     with transaction.atomic():
         case = Application.objects.select_for_update().get(pk=pk)
         require(int(request.POST.get('expected_version', 0)) == case.version, 'Case changed. Refresh before uploading.', 409)
-        e = Evidence(application=case, obligation=obligation, file=file, name=Path(file.name).name[:240], checksum=digest.hexdigest(), size=file.size, uploaded_by=request.user)
+        e = Evidence(
+            application=case, obligation=obligation, file=file,
+            name=Path(file.name).name[:240], checksum=digest.hexdigest(), size=file.size,
+            uploaded_by=request.user, storage_state='pending', mime_type=mime_map.get(suffix, 'application/octet-stream')
+        )
         for field in ['valid_from', 'valid_until']:
             if request.POST.get(field):
                 setattr(e, field, date.fromisoformat(request.POST[field]))
@@ -191,13 +291,29 @@ def upload(request, pk):
 def evidence_review(request, pk):
     return JsonResponse(review_evidence(request.user, pk, body(request)))
 
+@endpoint(('POST',))
+def security_review(request, pk):
+    return JsonResponse(security_review_evidence(request.user, pk, body(request)))
+
 @endpoint()
 def download(request, pk):
     e = Evidence.objects.filter(pk=pk).first()
     require(e, 'Evidence not found.', 404)
     permitted_case(request.user, e.application_id)
-    require(e.safety == 'clean' or (settings.DEMO_MODE and e.safety == 'demo_validated'), 'Evidence remains quarantined or was rejected.', 409)
-    response = FileResponse(e.file.open('rb'), as_attachment=True, filename=e.name, content_type='application/octet-stream')
+    require(e.safety in ['clean', 'demo_validated', 'security_reviewed'], 'Evidence remains quarantined or was rejected.', 409)
+    if e.drive_file_id and getattr(e, 'storage_state', '') == 'stored':
+        try:
+            from website import drive
+            if drive.connected():
+                stream = drive.download_stream(e)
+                response = FileResponse(stream, as_attachment=True, filename=e.name, content_type=e.mime_type or 'application/octet-stream')
+                response['Cache-Control'] = 'private, no-store'
+                response['X-Content-Type-Options'] = 'nosniff'
+                audit(e.application, request.user, 'evidence_downloaded', 'Authorised Drive attachment download', details={'evidence_id': str(e.pk), 'drive_file_id': e.drive_file_id})
+                return response
+        except Exception:
+            pass
+    response = FileResponse(e.file.open('rb'), as_attachment=True, filename=e.name, content_type=getattr(e, 'mime_type', 'application/octet-stream') or 'application/octet-stream')
     response['Cache-Control'] = 'private, no-store'
     response['X-Content-Type-Options'] = 'nosniff'
     audit(e.application, request.user, 'evidence_downloaded', 'Authorised attachment download', details={'evidence_id': str(e.pk)})
@@ -273,9 +389,7 @@ def operations(request):
 
 @endpoint()
 def audit_log(request):
-    qs = AuditEvent.objects.filter(application__in=scope(request.user))
-    if profile(request.user).role in ['auditor', 'bureau', 'policy', 'operator']:
-        qs = AuditEvent.objects.filter(Q(application__in=scope(request.user)) | Q(application=None))
+    qs = permitted_audit_events(request.user)
     return JsonResponse({'items': list(qs.order_by('-created_at')[:200].values('id', 'action', 'reason', 'actor__username', 'application_id', 'application__reference', 'created_at', 'before_version', 'after_version', 'details', 'correlation_id'))})
 
 def safe_csv(value):
@@ -290,14 +404,39 @@ def report(request):
     writer = csv.writer(buf)
     writer.writerow(['Anumati demonstration report', 'As of', timezone.now().isoformat(), 'Timezone', 'Asia/Kolkata'])
     if report_type == 'compliance':
-        writer.writerow(['Reference', 'Institution', 'Requirement', 'Status', 'Validity end', 'Verifier'])
-        rows = ((o.application.reference, o.application.institution.name, o.title, o.status, o.valid_until, o.verifier.get_full_name()) for o in Obligation.objects.filter(application__in=qs).select_related('application__institution', 'verifier'))
+        writer.writerow(['Reference', 'Institution', 'Requirement', 'Kind', 'Status', 'Lifecycle', 'Validity start', 'Validity end', 'Verifier'])
+        rows = ((o.application.reference, o.application.institution.name, o.title, o.kind, o.status, get_obligation_lifecycle(o), o.valid_from, o.valid_until, o.verifier.get_full_name()) for o in Obligation.objects.filter(application__in=qs).select_related('application__institution', 'verifier'))
+    elif report_type == 'validity':
+        writer.writerow(['Reference', 'Institution', 'Requirement', 'Kind', 'Valid from', 'Valid until', 'Days remaining', 'Lifecycle', 'Verifier'])
+        today = timezone.localdate()
+        rows = ((o.application.reference, o.application.institution.name, o.title, o.kind, o.valid_from, o.valid_until, (o.valid_until - today).days if o.valid_until else '', get_obligation_lifecycle(o), o.verifier.get_full_name()) for o in Obligation.objects.filter(application__in=qs, valid_until__isnull=False).select_related('application__institution', 'verifier'))
+    elif report_type == 'evc':
+        writer.writerow(['Reference', 'Institution', 'Region', 'Coordinator', 'Visit start', 'Visit end', 'Status', 'Late scheduled', 'Report submitted at'])
+        rows = ((v.application.reference, v.application.institution.name, v.application.institution.region, v.coordinator.get_full_name(), v.starts_at.isoformat(), v.ends_at.isoformat(), v.status, v.late_scheduled, v.report_submitted_at.isoformat() if v.report_submitted_at else '') for v in EVCVisit.objects.filter(application__in=qs).select_related('application__institution', 'coordinator'))
+    elif report_type == 'escalations':
+        writer.writerow(['Reference', 'Institution', 'Title', 'Kind', 'Due at', 'Revision', 'Owner', 'Escalation owner', 'Status', 'Reason'])
+        rows = ((e.deadline.application.reference, e.deadline.application.institution.name, e.deadline.title, e.deadline.kind, e.deadline.due_at.isoformat(), e.revision, e.deadline.owner.get_full_name(), e.owner.get_full_name(), e.status, e.reason) for e in Escalation.objects.filter(deadline__application__in=qs).select_related('deadline__application__institution', 'deadline__owner', 'owner'))
+    elif report_type == 'regional_performance':
+        writer.writerow(['Region', 'Total cases', 'Approved', 'Rejected', 'In progress', 'Avg age days'])
+        regions = set(qs.values_list('institution__region', flat=True).distinct())
+        reg_rows = []
+        now = timezone.now()
+        for r in sorted(regions):
+            rqs = qs.filter(institution__region=r)
+            tot = rqs.count()
+            appr = rqs.filter(stage='APPROVED').count()
+            rej = rqs.filter(stage='REJECTED').count()
+            inp = tot - appr - rej
+            avg_age = sum((now - c.created_at).days for c in rqs) / tot if tot else 0
+            reg_rows.append((r or 'Unassigned', tot, appr, rej, inp, round(avg_age, 1)))
+        rows = reg_rows
     elif report_type == 'audit':
         writer.writerow(['Reference', 'Actor', 'Action', 'Reason', 'Recorded at', 'Before version', 'After version'])
-        rows = ((e.application.reference, e.actor.username if e.actor else 'scheduler', e.action, e.reason, e.created_at, e.before_version, e.after_version) for e in AuditEvent.objects.filter(application__in=qs).select_related('application', 'actor').order_by('created_at'))
+        audit_events = permitted_audit_events(request.user).filter(application__in=qs).select_related('application', 'actor').order_by('created_at')
+        rows = ((e.application.reference if e.application else '', e.actor.username if e.actor else 'scheduler', e.action, e.reason, e.created_at.isoformat(), e.before_version, e.after_version) for e in audit_events)
     else:
-        writer.writerow(['Reference', 'Institution', 'Region', 'Category', 'Stage', 'Owner', 'Age days'])
-        rows = ((c.reference, c.institution.name, c.institution.region, c.category, c.stage, c.assigned_to.get_full_name() if c.assigned_to else '', (timezone.now()-c.created_at).days) for c in qs)
+        writer.writerow(['Reference', 'Institution', 'Region', 'Category', 'Stage', 'Owner', 'Age days', 'Created at'])
+        rows = ((c.reference, c.institution.name, c.institution.region, c.category, c.stage, c.assigned_to.get_full_name() if c.assigned_to else '', (timezone.now()-c.created_at).days, c.created_at.isoformat()) for c in qs)
     for row in rows:
         writer.writerow([safe_csv(v) for v in row])
     audit(None, request.user, 'report_export', f'{report_type} report', details={'filters': dict(request.GET.items())})
