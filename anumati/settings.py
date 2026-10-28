@@ -37,9 +37,21 @@ CELERY_TASK_REJECT_ON_WORKER_LOST = True
 CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
 CELERY_BROKER_TRANSPORT_OPTIONS = {'visibility_timeout': 300}
 CELERY_BEAT_SCHEDULE = {'deadlines': {'task': 'core.tasks.scan_deadlines', 'schedule': 30.0}, 'outbox-recovery': {'task': 'core.tasks.dispatch_outbox', 'schedule': 15.0}, 'scan-recovery': {'task': 'core.tasks.scan_pending_files', 'schedule': 30.0}}
-EMAIL_BACKEND = 'django.core.mail.backends.filebased.EmailBackend'
-EMAIL_FILE_PATH = BASE_DIR / '.runtime' / 'mail'
-DEFAULT_FROM_EMAIL = 'notifications@anumati.local'
+# Email Configuration: Defaults to file-based local sink in .runtime/mail for development/demo.
+# If EMAIL_HOST is provided in .env, seamlessly switches to live SMTP.
+if os.getenv('EMAIL_HOST'):
+    EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+    EMAIL_HOST = os.getenv('EMAIL_HOST')
+    EMAIL_PORT = int(os.getenv('EMAIL_PORT', '587'))
+    EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', '')
+    EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', '')
+    EMAIL_USE_TLS = os.getenv('EMAIL_USE_TLS', '1') == '1'
+    EMAIL_USE_SSL = os.getenv('EMAIL_USE_SSL', '0') == '1'
+else:
+    EMAIL_BACKEND = 'django.core.mail.backends.filebased.EmailBackend'
+    EMAIL_FILE_PATH = BASE_DIR / '.runtime' / 'mail'
+
+DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', 'Anumati AICTE <notifications@anumati.local>')
 
 GOOGLE_DRIVE_FOLDER_ID = os.getenv('GOOGLE_DRIVE_FOLDER_ID', '')
 GOOGLE_DRIVE_CLIENT_FILE = Path(os.getenv('GOOGLE_DRIVE_CLIENT_FILE', str(BASE_DIR / '.runtime' / 'google-oauth-client.json')))

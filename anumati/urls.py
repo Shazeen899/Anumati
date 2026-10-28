@@ -3,6 +3,7 @@ from core import views
 urlpatterns = [
     path('website/', include('website.urls')),
     path('api/session', views.session), path('api/login', views.sign_in), path('api/logout', views.sign_out),
+    path('api/signup/request-otp', views.request_signup_otp), path('api/signup/verify-otp', views.verify_signup_otp),
     path('api/dashboard', views.dashboard), path('api/metadata', views.metadata),
     path('api/applications', views.applications), path('api/applications/<uuid:pk>', views.application_detail),
     path('api/applications/<uuid:pk>/commands', views.case_command), path('api/applications/<uuid:pk>/evidence', views.upload),

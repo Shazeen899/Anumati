@@ -210,3 +210,16 @@ class LoginAttempt(models.Model):
     identity = models.CharField(max_length=64, unique=True)
     failures = models.PositiveIntegerField(default=0)
     window_start = models.DateTimeField(default=timezone.now)
+
+class SignupOTP(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    email = models.EmailField(db_index=True)
+    username = models.CharField(max_length=150)
+    institution_name = models.CharField(max_length=240)
+    region = models.CharField(max_length=80)
+    otp_hash = models.CharField(max_length=128)
+    attempts = models.PositiveIntegerField(default=0)
+    expires_at = models.DateTimeField()
+    created_at = models.DateTimeField(default=timezone.now)
+    verified = models.BooleanField(default=False)
+

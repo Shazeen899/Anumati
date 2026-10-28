@@ -725,3 +725,159 @@ class AnalyticsReportsAndAdapterTests(Fixtures, TestCase):
         sig = hmac.new(secret.encode('utf-8'), body, hashlib.sha256).hexdigest()
         self.assertTrue(adapter.verify_payment_webhook(body, sig, secret))
         self.assertFalse(adapter.verify_payment_webhook(body, 'invalid_sig', secret))
+
+
+@override_settings(DEMO_MODE=True, EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend', PASSWORD_HASHERS=['django.contrib.auth.hashers.MD5PasswordHasher'])
+class SignupOTPTests(TestCase):
+    def setUp(self):
+        from django.core import mail
+        mail.outbox.clear()
+        self.client = Client()
+
+    def test_signup_otp_request_valid(self):
+        from django.core import mail
+        payload = {
+            'institution_name': 'Indian Institute of Engineering',
+            'region': 'North',
+            'city': 'New Delhi',
+            'email': 'registrar@iie.edu.in',
+            'username': 'iie_registrar',
+        }
+        res = self.client.post('/api/signup/request-otp', data=json.dumps(payload), content_type='application/json')
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertIn('demo_otp', data)
+        self.assertIsNotNone(data['demo_otp'])
+        self.assertEqual(len(data['demo_otp']), 6)
+
+        otp_record = SignupOTP.objects.filter(email='registrar@iie.edu.in').first()
+        self.assertIsNotNone(otp_record)
+        self.assertEqual(otp_record.username, 'iie_registrar')
+        self.assertEqual(otp_record.region, 'North')
+        self.assertFalse(otp_record.verified)
+
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn('Verification Code', mail.outbox[0].subject)
+        self.assertIn(data['demo_otp'], mail.outbox[0].body)
+
+    def test_signup_otp_request_duplicate_user(self):
+        User.objects.create_user('existing_user', 'existing@test.com', 'password123')
+        # Duplicate username
+        res1 = self.client.post('/api/signup/request-otp', data=json.dumps({
+            'institution_name': 'Test Inst',
+            'region': 'North',
+            'email': 'new@test.com',
+            'username': 'existing_user',
+        }), content_type='application/json')
+        self.assertEqual(res1.status_code, 409)
+
+        # Duplicate email
+        res2 = self.client.post('/api/signup/request-otp', data=json.dumps({
+            'institution_name': 'Test Inst',
+            'region': 'North',
+            'email': 'existing@test.com',
+            'username': 'new_user',
+        }), content_type='application/json')
+        self.assertEqual(res2.status_code, 409)
+
+    def test_signup_otp_request_invalid_inputs(self):
+        # Invalid email
+        res = self.client.post('/api/signup/request-otp', data=json.dumps({
+            'institution_name': 'Valid Name',
+            'region': 'North',
+            'email': 'not-an-email',
+            'username': 'valid_user',
+        }), content_type='application/json')
+        self.assertEqual(res.status_code, 400)
+
+        # Invalid region
+        res = self.client.post('/api/signup/request-otp', data=json.dumps({
+            'institution_name': 'Valid Name',
+            'region': 'Moon',
+            'email': 'valid@test.com',
+            'username': 'valid_user',
+        }), content_type='application/json')
+        self.assertEqual(res.status_code, 400)
+
+    def test_signup_otp_rate_limiting(self):
+        payload = {
+            'institution_name': 'Speedy College',
+            'region': 'West',
+            'email': 'speedy@college.edu',
+            'username': 'speedy_user',
+        }
+        for _ in range(3):
+            res = self.client.post('/api/signup/request-otp', data=json.dumps(payload), content_type='application/json')
+            self.assertEqual(res.status_code, 200)
+
+        res4 = self.client.post('/api/signup/request-otp', data=json.dumps(payload), content_type='application/json')
+        self.assertEqual(res4.status_code, 429)
+
+    def test_signup_otp_verification_failure(self):
+        payload = {
+            'institution_name': 'Security Institute',
+            'region': 'South',
+            'email': 'sec@sec.edu',
+            'username': 'sec_user',
+        }
+        res = self.client.post('/api/signup/request-otp', data=json.dumps(payload), content_type='application/json')
+        self.assertEqual(res.status_code, 200)
+
+        # Wrong OTP
+        res_fail = self.client.post('/api/signup/verify-otp', data=json.dumps({
+            'email': 'sec@sec.edu',
+            'otp': '000000',
+            'password': 'StrongPassword123',
+            'password_confirm': 'StrongPassword123',
+        }), content_type='application/json')
+        self.assertEqual(res_fail.status_code, 400)
+        self.assertIn('Invalid verification code', res_fail.json()['error'])
+
+        otp_record = SignupOTP.objects.get(email='sec@sec.edu')
+        self.assertEqual(otp_record.attempts, 1)
+
+    def test_signup_otp_verification_success(self):
+        payload = {
+            'institution_name': 'Apex Institute of Technology',
+            'region': 'Central',
+            'city': 'Bhopal',
+            'email': 'admin@apextech.ac.in',
+            'username': 'apex_admin',
+        }
+        res_req = self.client.post('/api/signup/request-otp', data=json.dumps(payload), content_type='application/json')
+        self.assertEqual(res_req.status_code, 200)
+        otp = res_req.json()['demo_otp']
+
+        verify_payload = {
+            'email': 'admin@apextech.ac.in',
+            'otp': otp,
+            'password': 'ComplexPassword2026!',
+            'password_confirm': 'ComplexPassword2026!',
+            'city': 'Bhopal',
+        }
+        res_verify = self.client.post('/api/signup/verify-otp', data=json.dumps(verify_payload), content_type='application/json')
+        self.assertEqual(res_verify.status_code, 200)
+        data = res_verify.json()
+        self.assertIn('user', data)
+        self.assertEqual(data['user']['username'], 'apex_admin')
+        self.assertEqual(data['user']['role'], 'institution')
+
+        # Check DB models
+        user = User.objects.get(username='apex_admin')
+        self.assertTrue(user.check_password('ComplexPassword2026!'))
+        self.assertEqual(user.email, 'admin@apextech.ac.in')
+
+        profile = user.profile
+        self.assertEqual(profile.role, 'institution')
+        self.assertEqual(profile.region, 'Central')
+        self.assertIsNotNone(profile.institution)
+        self.assertEqual(profile.institution.name, 'Apex Institute of Technology')
+        self.assertEqual(profile.institution.city, 'Bhopal')
+        self.assertTrue(profile.institution.code.startswith('INST-'))
+
+        otp_record = SignupOTP.objects.get(email='admin@apextech.ac.in')
+        self.assertTrue(otp_record.verified)
+
+        audit_event = AuditEvent.objects.filter(action='institution_registered', actor=user).first()
+        self.assertIsNotNone(audit_event)
+        self.assertEqual(audit_event.institution, profile.institution)

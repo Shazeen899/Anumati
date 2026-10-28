@@ -31,7 +31,8 @@ def wait(port):
 
 def start(name,args,cwd=ROOT):
     log=(RUNTIME/f'{name}.log').open('ab')
-    p=subprocess.Popen([str(x) for x in args],cwd=cwd,stdout=log,stderr=subprocess.STDOUT,stdin=subprocess.DEVNULL,creationflags=FLAGS)
+    flags=(subprocess.CREATE_NO_WINDOW | 0x00000008 | 0x00000200) if os.name=='nt' else 0
+    p=subprocess.Popen([str(x) for x in args],cwd=cwd,stdout=log,stderr=subprocess.STDOUT,stdin=subprocess.DEVNULL,creationflags=flags)
     ledger_path=RUNTIME/'processes.json'
     ledger=json.loads(ledger_path.read_text()) if ledger_path.exists() else {}
     ledger[name]={'pid':p.pid,'args':[str(x) for x in args]}

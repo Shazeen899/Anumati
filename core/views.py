@@ -1,7 +1,9 @@
 import csv
 import hashlib
+import hmac
 import io
 import json
+import secrets
 import uuid
 from datetime import timedelta, date
 from functools import wraps
@@ -9,6 +11,8 @@ from pathlib import Path
 from django.conf import settings
 from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth.models import User
+from django.core.mail import send_mail
+from django.core.validators import validate_email, ValidationError
 from django.db import transaction, IntegrityError
 from django.db.models import Count, Q
 from django.http import JsonResponse, FileResponse, HttpResponse
@@ -78,6 +82,171 @@ def sign_in(request):
 def sign_out(request):
     logout(request)
     return JsonResponse({'ok': True})
+
+@endpoint(('POST',), public=True)
+def request_signup_otp(request):
+    data = body(request)
+    email = str(data.get('email', '')).strip().lower()
+    username = str(data.get('username', '')).strip()
+    institution_name = str(data.get('institution_name', '')).strip()
+    region = str(data.get('region', '')).strip()
+    city = str(data.get('city', '')).strip()
+
+    if not email:
+        return JsonResponse({'error': 'Email address is required.'}, status=400)
+    try:
+        validate_email(email)
+    except ValidationError:
+        return JsonResponse({'error': 'Please enter a valid email address.'}, status=400)
+
+    if not username or len(username) < 3 or len(username) > 150:
+        return JsonResponse({'error': 'Username must be between 3 and 150 characters.'}, status=400)
+    if not username.replace('_', '').replace('.', '').replace('-', '').isalnum():
+        return JsonResponse({'error': 'Username may only contain letters, numbers, underscores, dots, and hyphens.'}, status=400)
+
+    if not institution_name or len(institution_name) < 3 or len(institution_name) > 240:
+        return JsonResponse({'error': 'Institution name must be between 3 and 240 characters.'}, status=400)
+
+    valid_regions = ['North', 'South', 'East', 'West', 'Central', 'North-West', 'South-West']
+    if region not in valid_regions:
+        return JsonResponse({'error': f'Select a valid AICTE region: {", ".join(valid_regions)}.'}, status=400)
+
+    # Check for duplicate user
+    if User.objects.filter(username__iexact=username).exists():
+        return JsonResponse({'error': f'The username "{username}" is already taken.'}, status=409)
+    if User.objects.filter(email__iexact=email).exists():
+        return JsonResponse({'error': f'An account with the email "{email}" already exists.'}, status=409)
+
+    # Rate limiting: max 3 requests per 15 minutes per email
+    cutoff = timezone.now() - timedelta(minutes=15)
+    recent_requests = SignupOTP.objects.filter(email=email, created_at__gte=cutoff).count()
+    if recent_requests >= 3:
+        return JsonResponse({'error': 'Too many verification code requests for this email. Please try again after 15 minutes.'}, status=429)
+
+    # Generate 6-digit OTP
+    otp = f"{secrets.randbelow(900000) + 100000}"
+    salt = settings.SECRET_KEY[:16]
+    otp_hash = hashlib.sha256((salt + otp).encode('utf-8')).hexdigest()
+    expires_at = timezone.now() + timedelta(minutes=10)
+
+    SignupOTP.objects.create(
+        email=email,
+        username=username,
+        institution_name=institution_name,
+        region=region,
+        otp_hash=otp_hash,
+        expires_at=expires_at,
+    )
+
+    subject = 'AICTE Anumati - Institution Registration Verification Code'
+    message = (
+        f"Greetings from AICTE Anumati Portal,\n\n"
+        f"Your 6-digit verification code (OTP) for registering the institution \"{institution_name}\" is:\n\n"
+        f"    {otp}\n\n"
+        f"This code is valid for 10 minutes. Please enter this code along with your chosen password on the registration page to activate your account.\n\n"
+        f"If you did not initiate this registration request, please disregard this email.\n\n"
+        f"AICTE Anumati Portal Administration\n"
+    )
+
+    try:
+        send_mail(
+            subject,
+            message,
+            getattr(settings, 'DEFAULT_FROM_EMAIL', 'noreply@anumati.aicte.gov.in'),
+            [email],
+            fail_silently=False,
+        )
+    except Exception as e:
+        if not settings.DEMO_MODE:
+            return JsonResponse({'error': f'Failed to dispatch verification email: {str(e)}'}, status=500)
+
+    response_data = {
+        'message': f'A 6-digit verification code has been dispatched to {email}. Valid for 10 minutes.',
+        'email': email,
+        'expires_in_minutes': 10,
+        'demo_otp': otp if settings.DEMO_MODE else None,
+    }
+    return JsonResponse(response_data)
+
+@endpoint(('POST',), public=True)
+def verify_signup_otp(request):
+    data = body(request)
+    email = str(data.get('email', '')).strip().lower()
+    otp = str(data.get('otp', '')).strip()
+    password = str(data.get('password', ''))
+    password_confirm = str(data.get('password_confirm', ''))
+    city = str(data.get('city', '')).strip()
+
+    if not email or not otp:
+        return JsonResponse({'error': 'Email address and verification code are required.'}, status=400)
+    if not password or len(password) < 8:
+        return JsonResponse({'error': 'Password must be at least 8 characters long.'}, status=400)
+    if password_confirm and password != password_confirm:
+        return JsonResponse({'error': 'Passwords do not match.'}, status=400)
+
+    signup_otp = SignupOTP.objects.filter(email=email, verified=False).order_by('-created_at').first()
+    if not signup_otp or signup_otp.expires_at < timezone.now():
+        return JsonResponse({'error': 'Verification code has expired or is invalid. Please request a new OTP.'}, status=400)
+
+    if signup_otp.attempts >= 5:
+        return JsonResponse({'error': 'Maximum verification attempts exceeded for this code. Please request a new OTP.'}, status=429)
+
+    salt = settings.SECRET_KEY[:16]
+    actual_hash = hashlib.sha256((salt + otp).encode('utf-8')).hexdigest()
+    if not hmac.compare_digest(actual_hash, signup_otp.otp_hash):
+        signup_otp.attempts += 1
+        signup_otp.save(update_fields=['attempts'])
+        remaining = max(0, 5 - signup_otp.attempts)
+        return JsonResponse({'error': f'Invalid verification code. {remaining} attempt(s) remaining.'}, status=400)
+
+    if User.objects.filter(username__iexact=signup_otp.username).exists():
+        return JsonResponse({'error': f'The username "{signup_otp.username}" was taken in the meantime. Please register with a different username.'}, status=409)
+    if User.objects.filter(email__iexact=signup_otp.email).exists():
+        return JsonResponse({'error': f'An account with the email "{signup_otp.email}" already exists.'}, status=409)
+
+    with transaction.atomic():
+        inst_code = f"INST-{uuid.uuid4().hex[:6].upper()}"
+        institution = Institution.objects.create(
+            name=signup_otp.institution_name,
+            code=inst_code,
+            region=signup_otp.region,
+            city=city or 'Headquarters',
+            kind='Technical institution',
+        )
+        user = User.objects.create_user(
+            username=signup_otp.username,
+            email=signup_otp.email,
+            password=password,
+        )
+        Profile.objects.create(
+            user=user,
+            role='institution',
+            institution=institution,
+            region=institution.region,
+        )
+        signup_otp.verified = True
+        signup_otp.save(update_fields=['verified'])
+        audit(
+            None,
+            user,
+            'institution_registered',
+            f'Institution {institution.name} ({institution.code}) successfully registered and verified via email OTP.',
+            scope_type='operations',
+            institution=institution,
+            details={
+                'username': user.username,
+                'email': user.email,
+                'institution_code': institution.code,
+                'region': institution.region,
+            }
+        )
+
+    profile(user)
+    login(request, user)
+    return JsonResponse({
+        'message': f'Institution account successfully registered and activated.',
+        'user': actor_json(user),
+    })
 
 def case_json(c):
     d = c.deadlines.filter(active=True, kind='stage').order_by('due_at').first()
