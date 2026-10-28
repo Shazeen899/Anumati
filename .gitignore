@@ -1,0 +1,14 @@
+.venv/
+.runtime/
+.env
+__pycache__/
+*.py[cod]
+node_modules/
+frontend/dist/
+private-media/
+staticfiles/
+*.log
+celerybeat-schedule*
+requirements-source/
+test-results/
+/package-lock.json
