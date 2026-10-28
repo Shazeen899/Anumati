@@ -11,7 +11,7 @@ SECRET_KEY = os.environ['DJANGO_SECRET_KEY']
 DEBUG = os.getenv('DJANGO_DEBUG', '0') == '1'
 DEMO_MODE = os.getenv('DEMO_MODE', '0') == '1'
 ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', '127.0.0.1,localhost,testserver').split(',')
-INSTALLED_APPS = ['django.contrib.auth', 'django.contrib.contenttypes', 'django.contrib.sessions', 'django.contrib.staticfiles', 'core']
+INSTALLED_APPS = ['django.contrib.auth', 'django.contrib.contenttypes', 'django.contrib.sessions', 'django.contrib.staticfiles', 'core', 'website']
 MIDDLEWARE = ['django.middleware.security.SecurityMiddleware', 'django.contrib.sessions.middleware.SessionMiddleware', 'django.middleware.common.CommonMiddleware', 'django.middleware.csrf.CsrfViewMiddleware', 'django.contrib.auth.middleware.AuthenticationMiddleware', 'django.middleware.clickjacking.XFrameOptionsMiddleware']
 ROOT_URLCONF = 'anumati.urls'
 WSGI_APPLICATION = 'anumati.wsgi.application'
@@ -40,3 +40,9 @@ CELERY_BEAT_SCHEDULE = {'deadlines': {'task': 'core.tasks.scan_deadlines', 'sche
 EMAIL_BACKEND = 'django.core.mail.backends.filebased.EmailBackend'
 EMAIL_FILE_PATH = BASE_DIR / '.runtime' / 'mail'
 DEFAULT_FROM_EMAIL = 'notifications@anumati.local'
+
+GOOGLE_DRIVE_FOLDER_ID = os.getenv('GOOGLE_DRIVE_FOLDER_ID', '')
+GOOGLE_DRIVE_CLIENT_FILE = Path(os.getenv('GOOGLE_DRIVE_CLIENT_FILE', str(BASE_DIR / '.runtime' / 'google-oauth-client.json')))
+GOOGLE_DRIVE_TOKEN_FILE = Path(os.getenv('GOOGLE_DRIVE_TOKEN_FILE', str(BASE_DIR / '.runtime' / 'google-drive-token.json')))
+GOOGLE_DRIVE_REDIRECT_URI = os.getenv('GOOGLE_DRIVE_REDIRECT_URI', 'http://127.0.0.1:8010/website/api/drive/callback')
+CELERY_BEAT_SCHEDULE['website-document-recovery'] = {'task': 'website.tasks.dispatch_documents', 'schedule': 20.0}

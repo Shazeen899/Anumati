@@ -33,6 +33,9 @@ jobs:
       - run: pip install -r requirements.lock.txt
       - run: python manage.py check
       - run: python manage.py makemigrations --check --dry-run
-      - run: python manage.py test core --noinput -v 2
+      - run: python manage.py test core website --noinput -v 2
       - run: npm ci --no-audit --no-fund && npm run build
         working-directory: frontend
+
+      - run: npm ci --no-audit --no-fund && npm run build
+        working-directory: website/frontend

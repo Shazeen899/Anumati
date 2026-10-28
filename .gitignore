@@ -5,6 +5,9 @@ __pycache__/
 *.py[cod]
 node_modules/
 frontend/dist/
+website/frontend/dist/
+google-oauth-client*.json
+google-drive-token*.json
 private-media/
 staticfiles/
 *.log

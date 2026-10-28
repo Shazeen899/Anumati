@@ -1,6 +1,7 @@
-from django.urls import path, re_path
+from django.urls import include, path, re_path
 from core import views
 urlpatterns = [
+    path('website/', include('website.urls')),
     path('api/session', views.session), path('api/login', views.sign_in), path('api/logout', views.sign_out),
     path('api/dashboard', views.dashboard), path('api/metadata', views.metadata),
     path('api/applications', views.applications), path('api/applications/<uuid:pk>', views.application_detail),

@@ -103,3 +103,8 @@ Equivalent: `python manage.py check`, `python manage.py test core --noinput -v 2
 This is a runnable **demonstration vertical slice**, not a certified production AICTE service. See [coverage](docs/COVERAGE.md), [architecture](docs/ARCHITECTURE.md), [operations](docs/OPERATIONS.md) and [verification](docs/VERIFICATION.md).
 
 PDF uploads remain quarantined because no approved malware scanner is configured. Synthetic text is explicitly labelled `demo_validated`, not antivirus-clean. Live AICTE/NSWS/payment, SSO/MFA, SMS/email providers, statutory signatures, consolidated policy rules, production TLS/hosting and formal security/accessibility/recovery acceptance are not claimed. Disabling `DEMO_MODE` alone does not make the application production-ready.
+## Institution website module
+
+The separate institution portal is available at **http://127.0.0.1:8010/website/**. Institutions can submit complaints and grievances with documents, link existing approval applications, and follow administrative responses. Administrators access the same records and documents through the portal inbox or the links in the approval workspace.
+
+See [module architecture and permissions](website/README.md) and [Google Drive setup instructions](docs/GOOGLE_DRIVE_SETUP.md). Google authorization is required before queued documents can be stored in the designated Drive folder.

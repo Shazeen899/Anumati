@@ -21,3 +21,12 @@ The automated suite also covers stale requests, same-key replay, changed-payload
 Run `python scripts/smoke.py` to repeat the live journey while the local services run. Each run creates a new clearly synthetic case and evidence file. Test logs and live results are stored under `.runtime/`, excluded from Git. The test suite itself uses a disposable PostgreSQL test database.
 
 These results do not establish production load capacity, malware scanning quality, formal WCAG conformance, independent security certification, all possible APH workflows, real provider delivery, or disaster-recovery objectives. GitHub CI is configured; a local pass is not a claim that a remote CI run has completed.
+
+
+## Institution website extension — 28 October 2026
+
+- 39 PostgreSQL tests passed (25 original workflow tests and 14 website tests).
+- Both independent React production builds passed; migration drift check passed.
+- Live HTTP/browser synthetic grievance GR-2026-4C7E433154B0 linked to AN-2026-0001. A synthetic DOCX receipt was persisted, bureau requested information, and the institution responded, returning it to In review. Another institution received 404 for both record and document and zero search results.
+- The real Celery worker discovers the website upload recovery task. Google Drive is not yet authorized, so the sample document remains pending in private staging. Live Drive upload/download is NOT verified; mocked tests cover Drive integrity, idempotency and failure recovery.
+- Local receipt report: .runtime/website-smoke.json. Repeat with scripts/website_smoke.py using only synthetic demo data.

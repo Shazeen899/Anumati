@@ -12,3 +12,6 @@ if (-not (Test-Path .env)) {
 }
 & .\.venv\Scripts\python.exe scripts/runtime.py credentials
 Write-Host 'Install/extract PostgreSQL and Redis as described in README.md, then run scripts/start.ps1.'
+
+Push-Location website/frontend
+try { npm.cmd ci --no-audit --no-fund; if ($LASTEXITCODE -ne 0) { throw "Website dependencies failed." }; npm.cmd run build; if ($LASTEXITCODE -ne 0) { throw "Website build failed." } } finally { Pop-Location }
